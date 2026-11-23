@@ -1,0 +1,512 @@
+﻿@model SchoolInventoryManagement.Web.ViewModels.CreateNewItemRequestViewModel
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@{
+    ViewData["Title"] = "New Requisition";
+
+    var lookups = ViewBag.Lookups as NewItemFormLookupsDTO
+        ?? new NewItemFormLookupsDTO { DepartmentName = "", BranchName = "" };
+    var isSupplies = Model.Kind == CategoryKind.Supply;
+
+    // Always at least one row, even after a post that removed them all.
+    // Each row is a name, a quantity, a unit (supplies), a description and
+    // the model or supply it was picked from. The lists line up by position.
+    var names = Model.ItemNames.Count > 0 ? Model.ItemNames : new List<string?> { "" };
+    var rows = names.Select((name, i) => (
+        Name: name,
+        Quantity: i < Model.Quantities.Count && Model.Quantities[i] is int q ? q : 1,
+        Unit: i < Model.Units.Count ? Model.Units[i] : null,
+        Description: i < Model.Descriptions.Count ? Model.Descriptions[i] : null,
+        ModelId: i < Model.ModelIds.Count ? Model.ModelIds[i] : null,
+        SupplyId: i < Model.SupplyIds.Count ? Model.SupplyIds[i] : null)).ToList();
+
+    var commonUnits = new[] { "piece", "box", "ream", "bottle", "pack", "roll", "set", "gallon" };
+    var units = lookups.Supplies.Select(s => s.Unit).Concat(commonUnits)
+        .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    // The rows to start with, built by the script from the template.
+    var startRows = rows.Select(r => new { name = r.Name, qty = r.Quantity, unit = r.Unit, desc = r.Description, modelId = r.ModelId, supplyId = r.SupplyId });
+}
+
+<div class="asset-detail-head">
+    <div>
+        <nav class="asset-crumbs" aria-label="Breadcrumb">
+            <a asp-action="MyRequests">Requisitions</a>
+            <span aria-hidden="true">&rsaquo;</span>
+            <span>New requisition</span>
+        </nav>
+        <h2 class="asset-detail-title">New requisition</h2>
+        <div class="asset-detail-sub">Fixed assets or consumables for your department. What the Property Department has is sent from stock; anything missing is bought first.</div>
+    </div>
+    <div class="asset-detail-actions">
+        <span class="asset-pill asset-status st-available">Authorised requester &middot; @lookups.DepartmentName</span>
+    </div>
+</div>
+
+@if (lookups.DeliveryRoomName is null)
+{
+    @* Sent to the department's room (Scripts/029): without one there is
+       nowhere to send it. *@
+    <div class="alert alert-warning">Your department has no room yet, so there is nowhere to send a requisition. Ask an administrator to give it one on the Departments page.</div>
+}
+
+<form asp-action="Create" method="post" class="register-form" id="newItemForm" enctype="multipart/form-data">
+    @Html.AntiForgeryToken()
+    @Html.FormTicket()
+    <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
+
+    <div class="row g-3">
+        <div class="col-lg-8">
+
+            @* ---- Assets or supplies ---- *@
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head"><div class="register-step-title">What are you asking for?</div></div>
+                <div class="register-step-body">
+                    <div class="nr-kinds" role="radiogroup" aria-label="Kind of item">
+                        <label class="nr-kind @(isSupplies ? "" : "is-on")">
+                            <input type="radio" name="Kind" value="Asset" checked="@(!isSupplies)" />
+                            <span class="nr-kind-dot" aria-hidden="true"></span>
+                            <span>
+                                <strong>Fixed Asset</strong>
+                                <small>Kept and tracked one by one, each with its own control number: chairs, laptops, projectors.</small>
+                            </span>
+                        </label>
+                        <label class="nr-kind @(isSupplies ? "is-on" : "")">
+                            <input type="radio" name="Kind" value="Supply" checked="@isSupplies" />
+                            <span class="nr-kind-dot" aria-hidden="true"></span>
+                            <span>
+                                <strong>Consumables</strong>
+                                <small>Counted by quantity and used up: paper, markers, alcohol.</small>
+                            </span>
+                        </label>
+                    </div>
+                    <div class="nr-hint mt-2">One requisition is either fixed assets or consumables, not both.</div>
+                </div>
+            </div>
+
+            @* ---- Items ---- *@
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head">
+                    <div class="register-step-title flex-grow-1" id="itemsTitle">@(isSupplies ? "Consumables" : "Fixed assets")</div>
+                    <span class="nr-head-note" id="itemsNote"></span>
+                </div>
+                <div class="register-step-body ni2-box @(isSupplies ? "is-supplies" : "")" id="itemsBox">
+                    <div class="ni2-grid ni2-head" aria-hidden="true">
+                        <span></span>
+                        <span>Item <small>pick from the list</small></span>
+                        <span>Quantity</span>
+                        <span class="ni2-unit-head">Unit</span>
+                        <span>Description <small>optional</small></span>
+                        <span></span>
+                    </div>
+
+                    <div id="itemRows"></div>
+
+                    @* One row: a typeable dropdown (data-combobox) of the school's
+                       fixed assets and consumables -- the script shows only the
+                       chosen kind; a name not on the list is added as a new item (name box).
+                       Every item can be picked, in stock or not, and any amount:
+                       what Property does not have is bought. *@
+                    <template id="rowTemplate">
+                        <div class="ni2-grid ni2-row item-row">
+                            <span class="nr-row-num"></span>
+                            <div class="ni2-name">
+                                <select class="form-select ni-pick" aria-label="Item" data-combo-new="new">
+                                    <option value="">Search or type a new item...</option>
+                                    @foreach (var g in lookups.Models.GroupBy(m => m.Category).OrderBy(g => g.Key))
+                                    {
+                                        <optgroup label="@g.Key" data-kind="Asset">
+                                            @foreach (var m in g.OrderBy(m => m.Name))
+                                            {
+                                                <option value="m@(m.Id)" data-kind="Asset" data-name="@m.Name" data-stock="@m.InStock" data-held="@m.Held"
+                                                        data-sub="@(m.InStock > 0 ? $"{g.Key} · {m.InStock} in stock" : $"{g.Key} · none in stock: it is bought")">@m.Name</option>
+                                            }
+                                        </optgroup>
+                                    }
+                                    @foreach (var g in lookups.Supplies.GroupBy(s => s.Category).OrderBy(g => g.Key))
+                                    {
+                                        <optgroup label="@g.Key" data-kind="Supply">
+                                            @foreach (var s in g.OrderBy(s => s.Name))
+                                            {
+                                                <option value="s@(s.Id)" data-kind="Supply" data-name="@s.Name" data-stock="@s.Quantity" data-held="@s.Held" data-unit="@s.Unit"
+                                                        data-sub="@(s.Quantity > 0 ? $"{g.Key} · {s.Quantity} {SupplyText.Unit(s.Quantity, s.Unit)} in stock" : $"{g.Key} · none in stock: it is bought")">@s.Name</option>
+                                            }
+                                        </optgroup>
+                                    }
+                                    @* Not shown in the list: picked by typing a name that is not
+                                       on it ("+ Add ... as a new item"); then it reads "New: name". *@
+                                    <option value="new" hidden>New item</option>
+                                </select>
+                                <input type="text" name="ItemNames" maxlength="150" autocomplete="off" class="form-control ni-name mt-2"
+                                       placeholder="Name of the new item" aria-label="Name of the new item" hidden />
+                                <input type="hidden" name="ModelIds" class="ni-model-id" />
+                                <input type="hidden" name="SupplyIds" class="ni-supply-id" />
+                                <div class="nr-hint ni-stock fw-semibold"></div>
+                                @* A photo of what is wanted (Scripts/037), optional; named Photo_{row} when sent. *@
+                                <label class="ni-photo">
+                                    <input type="file" accept="@FileUploads.ImageAccept" data-max-bytes="@FileUploads.MaxBytes" class="ni-photo-input" hidden />
+                                    <img class="ni-photo-thumb" alt="" hidden />
+                                    <span class="ni-photo-text">+ Photo <small>(optional)</small></span>
+                                </label>
+                            </div>
+                            <div class="qty-stepper ni-qty">
+                                <button type="button" class="qty-btn" data-step="-1" aria-label="Fewer">&minus;</button>
+                                <input type="number" name="Quantities" value="1" min="1" max="1000" step="1"
+                                       class="form-control qty-input" aria-label="Quantity" required />
+                                <button type="button" class="qty-btn" data-step="1" aria-label="More">+</button>
+                            </div>
+                            <input type="text" name="Units" maxlength="30" list="unitList" autocomplete="off"
+                                   class="form-control ni-unit" placeholder="e.g. box" aria-label="Unit" />
+                            <textarea name="Descriptions" rows="1" maxlength="500" class="form-control ni-desc"
+                                      placeholder="Brand, size, colour..." aria-label="Description"></textarea>
+                            <button type="button" class="nr-remove remove-row" title="Remove this item" aria-label="Remove this item">&times;</button>
+                        </div>
+                    </template>
+                    <datalist id="unitList">
+                        @foreach (var u in units)
+                        {
+                            <option value="@u"></option>
+                        }
+                    </datalist>
+
+                    <div class="ni-add-row">
+                        <button type="button" id="addItemRow" class="nr-add my-0">+ Add another item</button>
+                        <span class="nr-hint" id="searchHint"></span>
+                    </div>
+                    <span asp-validation-for="ItemNames" class="text-danger d-block"></span>
+
+                    <div class="ni2-note">No prices to fill in. What is not in stock is bought by Purchasing, who works out the cost.</div>
+                </div>
+            </div>
+
+            @* ---- Reason ---- *@
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head">
+                    <div class="register-step-title flex-grow-1">Reason</div>
+                    <span class="nr-head-note is-required">required</span>
+                </div>
+                <div class="register-step-body">
+                    <textarea asp-for="Reason" class="form-control" rows="3" maxlength="500" aria-label="Reason"
+                              placeholder="What it is for and who will use it."></textarea>
+                    <span asp-validation-for="Reason" class="text-danger d-block"></span>
+                    <div class="nr-hint mt-1">The Property and Purchasing officers read this.</div>
+                </div>
+            </div>
+
+            @* ---- Needed by ---- *@
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head">
+                    <div class="register-step-title flex-grow-1">When do you need it?</div>
+                    <span class="nr-badge" id="neededBadge" hidden></span>
+                </div>
+                <div class="register-step-body">
+                    <div class="input-icon ni-date">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18M8 3v4M16 3v4" /></svg>
+                        <input asp-for="NeededBy" type="date" class="form-control" id="neededBy" min="@PhilippineTime.Today.ToString("yyyy-MM-dd")" />
+                    </div>
+                    <span asp-validation-for="NeededBy" class="text-danger d-block"></span>
+                    <div class="nr-hint mt-1">Buying takes time: if something has to be bought, give as much notice as you can.</div>
+                </div>
+            </div>
+        </div>
+
+        @* ---- Summary ---- *@
+        <div class="col-lg-4">
+            <div class="asset-card nr-summary">
+                <div class="asset-card-title">Your requisition</div>
+                <dl class="approve-facts nr-summary-body">
+                    <div><dt>Kind</dt><dd id="sumKind">@(isSupplies ? "Consumables" : "Fixed assets")</dd></div>
+                    <div><dt>Items</dt><dd id="sumItems" class="is-empty">None yet</dd></div>
+                    <div><dt>Needed by</dt><dd id="sumNeeded" class="is-empty">Not chosen yet</dd></div>
+                    <div><dt>For</dt><dd>@DisplayText.Or(lookups.DepartmentName, "None")</dd></div>
+                    <div class="nr-summary-wide"><dt>To buy</dt><dd id="sumBuy" class="is-empty">Nothing: all from stock</dd></div>
+                    <div class="nr-summary-wide border-0 pb-0"><dt>Sent to</dt><dd class="@(lookups.DeliveryRoomName is null ? "is-empty" : "")">@(lookups.DeliveryRoomName ?? "No room yet")</dd></div>
+                </dl>
+                <div class="ni-next">
+                    <div class="register-side-label mb-2">What happens next</div>
+                    <ol class="ni-steps" id="nextSteps">
+                        @* Procurement only when something must be bought (update()). *@
+                        <li id="nextProc" hidden>
+                            <span class="ni-step-num">1</span>
+                            <span><strong>Procurement</strong><small>Purchasing buys what is missing: <span id="nextProcWhat"></span></small></span>
+                        </li>
+                        <li>
+                            <span class="ni-step-num">1</span>
+                            <span><strong>Property</strong><small>the Property Department picks the rest from stock and sends everything@(lookups.DeliveryRoomName is null ? "" : " to " + lookups.DeliveryRoomName)</small></span>
+                        </li>
+                        <li>
+                            <span class="ni-step-num">2</span>
+                            <span><strong>Receive</strong><small id="nextReceiveText">@(isSupplies ? "you confirm you received it" : "you confirm you received it; then the items are your department's to look after")</small></span>
+                        </li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="register-footer">
+        <span class="d-none d-md-inline">All the items go in one requisition and are sent together.</span>
+        <div class="d-flex ms-auto" style="gap:8px;">
+            <a asp-action="MyRequests" class="btn btn-outline-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary" id="submitBtn">Submit requisition</button>
+        </div>
+    </div>
+</form>
+
+@section Scripts {
+    @{
+        await Html.RenderPartialAsync("_ValidationScriptsPartial");
+    }
+    <script>
+        (function () {
+            var START = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(startRows));
+            var box = document.getElementById('itemsBox');
+            var rowsBox = document.getElementById('itemRows');
+            var template = document.getElementById('rowTemplate');
+            var addButton = document.getElementById('addItemRow');
+            var neededBy = document.getElementById('neededBy');
+            var kinds = Array.from(document.querySelectorAll('input[name=Kind]'));
+            var maxRows = 20; // the service refuses more than this anyway
+
+            function isSupplies() { return kinds.some(function (k) { return k.checked && k.value === 'Supply'; }); }
+            function kind() { return isSupplies() ? 'Supply' : 'Asset'; }
+            function allRows() { return Array.from(rowsBox.querySelectorAll('.item-row')); }
+            function picked(row) { var s = row.querySelector('.ni-pick'); return s.options[s.selectedIndex] || null; }
+
+            // Only the chosen kind's items are in the list.
+            function showKind(select) {
+                Array.from(select.options).forEach(function (o) {
+                    if (o.dataset.kind) o.hidden = o.dataset.kind !== kind();
+                });
+            }
+
+            // What the pick means for the posted fields: the model or supply,
+            // its name, and for a supply its unit.
+            function applyPick(row) {
+                var o = picked(row);
+                var name = row.querySelector('.ni-name');
+                var unit = row.querySelector('.ni-unit');
+                row.querySelector('.ni-model-id').value = '';
+                row.querySelector('.ni-supply-id').value = '';
+                unit.readOnly = false;
+                if (o && o.value === 'new') {
+                    // The name is what was typed in the item box (combo-new).
+                    if (name.dataset.fromList) { name.value = ''; delete name.dataset.fromList; }
+                    name.hidden = true;
+                } else if (o && o.value) {
+                    name.value = o.dataset.name;
+                    name.dataset.fromList = '1';
+                    name.hidden = true;
+                    if (o.value.charAt(0) === 'm') row.querySelector('.ni-model-id').value = o.value.slice(1);
+                    else { row.querySelector('.ni-supply-id').value = o.value.slice(1); unit.value = o.dataset.unit; unit.readOnly = true; }
+                } else {
+                    name.value = '';
+                    name.hidden = true;
+                }
+            }
+
+            function addRow(d) {
+                var row = template.content.firstElementChild.cloneNode(true);
+                rowsBox.appendChild(row);
+                var select = row.querySelector('.ni-pick');
+                showKind(select);
+                if (d) {
+                    var value = d.modelId && !isSupplies() ? 'm' + d.modelId : d.supplyId && isSupplies() ? 's' + d.supplyId : '';
+                    if (value && select.querySelector('option[value="' + value + '"]')) select.value = value;
+                    else if (d.name) select.value = 'new';
+                    row.querySelector('.qty-input').value = d.qty || 1;
+                    row.querySelector('.ni-unit').value = d.unit || '';
+                    row.querySelector('.ni-desc').value = d.desc || '';
+                }
+                applyPick(row);
+                if (d && select.value === 'new') row.querySelector('.ni-name').value = d.name || '';
+                if (select.value === 'new') select.querySelector('option[value="new"]').textContent = (d && d.name) || 'New item';
+                select.setAttribute('data-combobox', '');
+                window.sabCombobox(select);
+                return row;
+            }
+
+            // ---- Fixed assets / consumables ----
+            function applyKind() {
+                var supplies = isSupplies();
+                kinds.forEach(function (k) { k.closest('.nr-kind').classList.toggle('is-on', k.checked); });
+                box.classList.toggle('is-supplies', supplies);
+                document.getElementById('itemsTitle').textContent = supplies ? 'Consumables' : 'Fixed assets';
+                document.getElementById('sumKind').textContent = supplies ? 'Consumables' : 'Fixed assets';
+                document.getElementById('nextReceiveText').textContent = supplies
+                    ? 'you confirm you received it'
+                    : "you confirm you received it; then the items are your department's to look after";
+                document.getElementById('searchHint').textContent = supplies
+                    ? 'Pick a consumable from the list, in stock or not. Not on the list? Just type its name in the box: it is added as a new item, to buy.'
+                    : 'Pick a fixed asset from the list, in stock or not. Not on the list? Just type its name in the box: it is added as a new item, to buy.';
+            }
+            kinds.forEach(function (k) {
+                k.addEventListener('change', function () {
+                    applyKind();
+                    // An item of the other kind is cleared; new items stay.
+                    allRows().forEach(function (row) {
+                        var select = row.querySelector('.ni-pick');
+                        var o = picked(row);
+                        if (o && o.dataset.kind && o.dataset.kind !== kind()) select.value = '';
+                        showKind(select);
+                        applyPick(row);
+                        select.dispatchEvent(new Event('combo-sync'));
+                    });
+                    update();
+                });
+            });
+
+            // ---- Counts, from stock or to buy, and the side card ----
+            function update() {
+                var rows = allRows();
+                var named = 0, units = 0, left = {}, missing = [];
+                rows.forEach(function (row, i) {
+                    row.querySelector('.nr-row-num').textContent = i + 1;
+                    row.querySelector('.remove-row').style.visibility = rows.length === 1 ? 'hidden' : 'visible';
+                    var o = picked(row);
+                    var name = row.querySelector('.ni-name').value.trim();
+                    var qty = parseInt(row.querySelector('.qty-input').value, 10) || 0;
+                    var stockEl = row.querySelector('.ni-stock');
+                    if (!o || !o.value || !name || qty < 1) { stockEl.textContent = ''; return; }
+                    named++;
+                    units += qty;
+                    // The server decides the same way when it is sent: what
+                    // Property has comes from stock, the rest is bought.
+                    var have = 0;
+                    if (o.value !== 'new') {
+                        if (!(o.value in left)) left[o.value] = parseInt(o.dataset.stock, 10) || 0;
+                        have = Math.min(qty, left[o.value]);
+                        left[o.value] -= have;
+                    }
+                    var buy = qty - have;
+                    stockEl.textContent = o.value === 'new' ? 'New: all to buy'
+                        : buy === 0 ? 'All from stock'
+                        : have === 0 ? 'None in stock: all to buy'
+                        : have + ' from stock · ' + buy + ' to buy';
+                    // Stock Property has but already promised elsewhere.
+                    var held = o.value !== 'new' ? (parseInt(o.dataset.held, 10) || 0) : 0;
+                    if (buy > 0 && held > 0)
+                        stockEl.textContent += ' (' + held + ' more in stock, held for other requisitions)';
+                    stockEl.classList.toggle('text-warning', buy > 0);
+                    if (buy > 0) missing.push(name + ' ×' + buy);
+                });
+                addButton.disabled = rows.length >= maxRows;
+
+                document.getElementById('itemsNote').textContent = named
+                    ? named + ' item' + (named === 1 ? '' : 's') + (named > 1 ? ' · one requisition, sent together' : '')
+                    : '';
+                sabShow(document.getElementById('sumItems'), named ? named + ' · ' + units + ' unit' + (units === 1 ? '' : 's') : '', 'None yet');
+                var sumBuy = document.getElementById('sumBuy');
+                sumBuy.textContent = missing.length ? missing.join(', ') : 'Nothing: all from stock';
+                sumBuy.classList.toggle('is-empty', !missing.length);
+                document.getElementById('nextProc').hidden = !missing.length;
+                document.getElementById('nextProcWhat').textContent = missing.join(', ');
+                var n = 0;
+                document.querySelectorAll('#nextSteps > li').forEach(function (li) {
+                    if (!li.hidden) li.querySelector('.ni-step-num').textContent = ++n;
+                });
+
+                // Needed by: the date, and "in 4 weeks" beside the heading.
+                var badge = document.getElementById('neededBadge');
+                var sum = document.getElementById('sumNeeded');
+                if (neededBy.value) {
+                    var d = new Date(neededBy.value + 'T00:00');
+                    var today = new Date(); today.setHours(0, 0, 0, 0);
+                    var days = Math.round((d - today) / 86400000);
+                    sum.textContent = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                    sum.classList.remove('is-empty');
+                    badge.textContent = days <= 0 ? 'today' : days === 1 ? 'tomorrow' : days < 14 ? 'in ' + days + ' days'
+                        : days < 60 ? 'in ' + Math.round(days / 7) + ' weeks' : 'in ' + Math.round(days / 30) + ' months';
+                    badge.hidden = days < 0;
+                } else {
+                    sabShow(sum, '', 'Not chosen yet');
+                    badge.hidden = true;
+                }
+            }
+
+            neededBy.addEventListener('change', update);
+            neededBy.addEventListener('input', update);
+
+            rowsBox.addEventListener('change', function (e) {
+                if (e.target.classList.contains('ni-pick')) {
+                    var row = e.target.closest('.item-row');
+                    applyPick(row);
+                }
+                update();
+            });
+            // A name typed into the list and added as a new item fills the
+            // name box.
+            rowsBox.addEventListener('combo-new', function (e) {
+                var row = e.target.closest('.item-row');
+                var name = row.querySelector('.ni-name');
+                name.value = e.detail.text;
+                delete name.dataset.fromList;
+                newLabel(row);
+                update();
+            });
+            // A new item's box shows the name as typed ("New: all to buy" is
+            // said under it), so it can be edited right there.
+            function newLabel(row) {
+                var select = row.querySelector('.ni-pick');
+                var opt = select.querySelector('option[value="new"]');
+                opt.textContent = row.querySelector('.ni-name').value.trim() || 'New item';
+                if (select.value === 'new') select.dispatchEvent(new Event('combo-sync'));
+            }
+            rowsBox.addEventListener('input', function (e) {
+                var desc = e.target.closest('.ni-desc');
+                if (desc) { desc.style.height = 'auto'; desc.style.height = desc.scrollHeight + 2 + 'px'; }
+                update();
+            });
+
+            addButton.addEventListener('click', function () {
+                var row = addRow(null);
+                update();
+                var input = row.querySelector('.combo-input');
+                if (input) input.focus();
+            });
+
+
+
+            rowsBox.addEventListener('click', function (e) {
+                var step = e.target.closest('[data-step]');
+                if (step) {
+                    var qty = step.parentNode.querySelector('.qty-input');
+                    var n = (parseInt(qty.value, 10) || 1) + parseInt(step.dataset.step, 10);
+                    qty.value = Math.min(1000, Math.max(1, n));
+                    update();
+                    return;
+                }
+                var button = e.target.closest('.remove-row');
+                if (!button) return;
+                var row = button.closest('.item-row');
+                if (allRows().length > 1) row.remove();
+                else { row.remove(); addRow(null); }
+                update();
+            });
+
+            applyKind();
+            (START.length ? START : [null]).forEach(addRow);
+            update();
+
+            // Item photos (Scripts/037): a preview in the row; each file is
+            // named after its row's position when the form is sent.
+            rowsBox.addEventListener('change', function (e) {
+                var input = e.target.closest('.ni-photo-input');
+                if (!input) return;
+                var label = input.closest('.ni-photo'), thumb = label.querySelector('.ni-photo-thumb'), text = label.querySelector('.ni-photo-text');
+                var file = input.files[0], max = parseInt(input.dataset.maxBytes, 10) || 0;
+                if (file && max && file.size > max) { alert('That photo is too big. The limit is ' + Math.round(max / 1048576) + ' MB.'); input.value = ''; file = null; }
+                if (thumb.src) URL.revokeObjectURL(thumb.src);
+                thumb.hidden = !file;
+                if (file) thumb.src = URL.createObjectURL(file); else thumb.removeAttribute('src');
+                text.innerHTML = file ? 'Change photo' : '+ Photo <small>(optional)</small>';
+            });
+            document.getElementById('newItemForm').addEventListener('submit', function () {
+                allRows().forEach(function (row, i) {
+                    var input = row.querySelector('.ni-photo-input');
+                    if (input) input.name = input.files.length ? 'Photo_' + i : '';
+                });
+            });
+        })();
+    </script>
+}

@@ -1,0 +1,53 @@
+﻿using System.Collections.Generic;
+using SchoolInventoryManagement.BLL.DTOs;
+
+namespace SchoolInventoryManagement.Web.ViewModels
+{
+    public class HomeDashboardViewModel
+    {
+        // False for roles that can't view reports (Teacher, Staff, Department
+        // Head). It selects which half of the dashboard is populated and
+        // rendered: the inventory-wide one below, or the personal one.
+        public bool IsReportsViewer { get; set; }
+
+        public string DisplayName { get; set; } = "";
+
+        public int TotalAssets { get; set; }
+        public int CurrentlyIssued { get; set; }
+        public int UnderMaintenanceCount { get; set; }
+        public decimal ValueInService { get; set; }
+
+        public List<CountByLabelDTO> ByCategory { get; set; } = new();
+
+        public int PendingRequestCount { get; set; }
+
+        // Where "View all" goes: borrow and transfer approvals for Property,
+        // supply approvals for the Principal.
+        public string PendingRequestsController { get; set; } = "AssetRequests";
+
+        // The other half of the dashboard, for everyone IsReportsViewer
+        // excludes. Those roles cannot see inventory-wide figures, so their
+        // panel reports only what is theirs: what they are holding and what
+        // they have asked for.
+        public int AssetsInMyCare { get; set; }
+        public int MyOpenRequestCount { get; set; }
+
+        // Capped, most-recent-first — the same shape as RecentActivity, so
+        // the two halves of the dashboard read alike.
+        public List<AssetRequestResponseDTO> MyRecentRequests { get; set; } = new();
+
+        // Capped, most-recent-first. Reuses IReportService.GetAuditTrailAsync
+        // rather than a new query. Repeats in a row are one line with a count.
+        public List<ActivityItem> RecentActivity { get; set; } = new();
+
+        // One line of the activity feed: an entry, and how many times in a row
+        // the same person did the same thing (67 users added at once = 67).
+        public class ActivityItem
+        {
+            public ActivityItem(AuditReportRowDTO entry) { Entry = entry; Oldest = entry.LogDateTime; }
+            public AuditReportRowDTO Entry { get; }
+            public int Count { get; set; } = 1;
+            public DateTime Oldest { get; set; }
+        }
+    }
+}

@@ -1,0 +1,206 @@
+@inject SchoolInventoryManagement.BLL.Interfaces.IModelService ModelService
+@* The "+ New model" popup on Register and Bulk register (the button is in
+   _ModelPicker). Rendered after the asset form, not inside it -- a form
+   inside a form is not allowed. Saves through Models/QuickCreate without
+   leaving the page, so nothing typed into the asset form is lost. On
+   success it raises "model-added", which the picker turns into a new,
+   already-picked entry; "Use that instead" raises "model-use", which picks
+   the existing model. *@
+@{
+    var categories = (List<SchoolInventoryManagement.BLL.DTOs.CategoryDTO>)ViewBag.QuickAddCategories;
+    var existing = (await ModelService.GetAllModelsAsync())
+        .Select(m => new { id = m.ModelID, name = m.ModelName, units = m.AssetCount })
+        .ToList();
+}
+
+<div class="modal fade" id="quickAddModel" tabindex="-1" aria-labelledby="quickAddModelTitle" aria-hidden="true"
+     data-prefill-name="@(ViewData["QuickAddName"] as string)" data-prefill-description="@(ViewData["QuickAddDescription"] as string)">
+    <div class="modal-dialog modal-dialog-centered cancel-dialog">
+        <form class="modal-content cancel-modal" id="quickAddForm" novalidate>
+            @Html.AntiForgeryToken()
+            <div class="cancel-head">
+                <div class="flex-grow-1 min-w-0">
+                    <h3 class="cancel-title" id="quickAddModelTitle">Add a new model</h3>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+
+            <div class="modal-body cancel-body">
+                <div id="qaError" class="text-danger small mb-2 d-none"></div>
+
+                <label for="qaModelName" class="form-label">Model name</label>
+                <input id="qaModelName" name="ModelName" maxlength="150" class="form-control" autocomplete="off" placeholder="e.g. Magnetic Whiteboard, 4 × 8 ft" />
+                <div class="lk-similar mt-2" id="qaSimilar" hidden>
+                    <span>Similar model already exists: <strong id="qaSimilarName"></strong> <span id="qaSimilarUnits"></span></span>
+                    <a href="#" id="qaUseExisting">Use that instead</a>
+                </div>
+
+                <label for="qaCategory" class="form-label mt-3">Category</label>
+                <select id="qaCategory" name="CategoryID" class="form-select">
+                    <option value="">Select a category</option>
+                    @foreach (var c in categories)
+                    {
+                        <option value="@c.CategoryID">@c.CategoryName (@c.CodePrefix)</option>
+                    }
+                    <option value="new">+ New category&hellip;</option>
+                </select>
+
+                <div class="qa-newcat mt-2 d-none" id="qaNewCategory">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="lk-code-label">New category</span>
+                        <a href="#" id="qaPickExisting" class="small">Pick an existing one instead</a>
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-sm-6">
+                            <label for="qaCategoryName" class="form-label">Category name</label>
+                            <input id="qaCategoryName" name="NewCategoryName" maxlength="100" class="form-control" placeholder="e.g. Whiteboards" />
+                        </div>
+                        <div class="col-sm-6">
+                            <label for="qaCodePrefix" class="form-label">Code prefix</label>
+                            <input id="qaCodePrefix" name="NewCodePrefix" maxlength="3" class="form-control text-uppercase" placeholder="e.g. WBD" autocomplete="off" />
+                            <div class="form-text">Assets will be <span id="qaPrefixPreview">WBD</span>-0001, <span class="qa-prefix-again">WBD</span>-0002&hellip;</div>
+                        </div>
+                    </div>
+                </div>
+
+                <label for="qaDescription" class="form-label mt-3">Description <span class="register-optional">optional</span></label>
+                <textarea id="qaDescription" name="Description" maxlength="500" rows="2" class="form-control" placeholder="e.g. Magnetic, with marker tray and wall brackets."></textarea>
+            </div>
+
+            <div class="cancel-foot">
+                <span class="text-muted small">Also shows up in Catalog &rsaquo; Models.</span>
+                <div class="d-flex" style="gap:8px;">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" id="qaSave" class="btn btn-primary">Add model</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    (function () {
+        var modalEl = document.getElementById('quickAddModel');
+        var form = document.getElementById('quickAddForm');
+        var errorBox = document.getElementById('qaError');
+        var modelName = document.getElementById('qaModelName');
+        var categorySelect = document.getElementById('qaCategory');
+        var newBox = document.getElementById('qaNewCategory');
+        var categoryName = document.getElementById('qaCategoryName');
+        var prefix = document.getElementById('qaCodePrefix');
+        var saveBtn = document.getElementById('qaSave');
+        var existing = @Json.Serialize(existing);
+        var similar = null;
+        var url = '@Url.Action("QuickCreate", "Models")';
+
+        function showError(text) {
+            errorBox.textContent = text || '';
+            errorBox.classList.toggle('d-none', !text);
+        }
+
+        // "+ New category..." in the list opens the fields for one; never
+        // both, so the server is never unsure which was meant.
+        function useNewCategory(on) {
+            newBox.classList.toggle('d-none', !on);
+            if (on) {
+                categorySelect.value = 'new';
+                categoryName.focus();
+            } else {
+                if (categorySelect.value === 'new') categorySelect.value = '';
+                categoryName.value = '';
+                prefix.value = '';
+                syncPrefix();
+            }
+        }
+        categorySelect.addEventListener('change', function () { useNewCategory(categorySelect.value === 'new'); });
+        document.getElementById('qaPickExisting').addEventListener('click', function (e) { e.preventDefault(); useNewCategory(false); });
+
+        function syncPrefix() {
+            var clean = prefix.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3);
+            if (clean !== prefix.value) prefix.value = clean;
+            document.getElementById('qaPrefixPreview').textContent = clean || 'WBD';
+            document.querySelector('.qa-prefix-again').textContent = clean || 'WBD';
+        }
+        prefix.addEventListener('input', syncPrefix);
+
+        // A model whose name contains this one (or the other way round).
+        function norm(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+        function syncSimilar() {
+            var typed = norm(modelName.value);
+            similar = typed.length >= 4 ? existing.find(function (m) {
+                var n = norm(m.name);
+                return n === typed || n.indexOf(typed) !== -1 || typed.indexOf(n) !== -1;
+            }) : null;
+            document.getElementById('qaSimilar').hidden = !similar;
+            if (!similar) return;
+            document.getElementById('qaSimilarName').textContent = similar.name;
+            document.getElementById('qaSimilarUnits').textContent = '· ' + similar.units + ' unit' + (similar.units === 1 ? '' : 's');
+        }
+        modelName.addEventListener('input', syncSimilar);
+        document.getElementById('qaUseExisting').addEventListener('click', function (e) {
+            e.preventDefault();
+            if (!similar) return;
+            document.dispatchEvent(new CustomEvent('model-use', { detail: { modelId: similar.id } }));
+            bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+        });
+
+        // Starts clean every time it opens; for an item bought for a
+        // requisition, with its name and description filled in (editable).
+        modalEl.addEventListener('show.bs.modal', function () {
+            form.reset();
+            useNewCategory(false);
+            showError('');
+            if (modalEl.dataset.prefillName) modelName.value = modelName.value || modalEl.dataset.prefillName;
+            var desc = document.getElementById('qaDescription');
+            if (desc && modalEl.dataset.prefillDescription) desc.value = desc.value || modalEl.dataset.prefillDescription;
+            syncSimilar();
+        });
+        modalEl.addEventListener('shown.bs.modal', function () { modelName.focus(); });
+
+        form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            showError('');
+            saveBtn.disabled = true;
+
+            var data = new FormData(form);
+            if (data.get('CategoryID') === 'new') data.delete('CategoryID');
+
+            fetch(url, { method: 'POST', body: data, credentials: 'same-origin' })
+                .then(function (response) {
+                    // A signed-out session answers with the login page, not
+                    // JSON -- that lands in the catch below as "no reply".
+                    return response.json().then(function (body) {
+                        return { ok: response.ok, body: body };
+                    });
+                })
+                .then(function (result) {
+                    var m = result.body;
+                    if (!result.ok || !m || m.error || !m.modelId) {
+                        showError((m && m.error) || 'Could not save the model. Please try again.');
+                        return;
+                    }
+
+                    // A new category goes into this popup's list too, so the
+                    // next model can use it without reloading.
+                    if (m.newCategory) {
+                        var opt = document.createElement('option');
+                        opt.value = m.categoryId;
+                        opt.text = m.categoryName + ' (' + m.prefix + ')';
+                        categorySelect.insertBefore(opt, categorySelect.querySelector('option[value="new"]'));
+                    }
+                    existing.push({ id: m.modelId, name: m.modelName, units: 0 });
+
+                    // Opened from another row of Bulk register (Scripts/037):
+                    // the model goes to that row, not the model picker.
+                    m.target = window.__qaTarget || null;
+                    window.__qaTarget = null;
+                    document.dispatchEvent(new CustomEvent('model-added', { detail: m }));
+                    bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+                })
+                .catch(function () {
+                    showError('Could not save the model. Check your connection, or reload the page if you were signed out.');
+                })
+                .finally(function () { saveBtn.disabled = false; });
+        });
+    })();
+</script>

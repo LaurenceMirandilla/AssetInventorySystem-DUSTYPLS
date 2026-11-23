@@ -1,0 +1,196 @@
+﻿@model SchoolInventoryManagement.Web.ViewModels.ReturnAssetViewModel
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@{
+    ViewData["Title"] = "Return Asset";
+    var asset = (AssetResponseDTO)ViewBag.Asset;
+    var assignment = (AssetAssignmentResponseDTO)ViewBag.Assignment;
+    var locations = (List<LocationDTO>)ViewBag.ReturnLocations;
+    var holder = assignment.AssignedToUser.FullName;
+    var daysOut = (PhilippineTime.Today - assignment.AssignmentDate.Date).Days;
+    var picked = locations.FirstOrDefault(l => l.LocationID == Model.ReturnLocationID);
+    // The branch list starts on the picked room's branch, else the asset's.
+    var startBranch = picked?.BranchID ?? asset?.BranchID;
+    var branches = locations.GroupBy(l => l.BranchID)
+        .Select(g => (BranchID: g.Key, BranchName: g.First().BranchName, Rooms: g.Count()))
+        .OrderBy(b => b.BranchName).ToList();
+    var conditions = Enum.GetValues<ConditionStatus>();
+}
+
+@functions {
+    static string Initials(string name)
+    {
+        var initials = string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(p => p[0])).ToUpperInvariant();
+        return initials.Length > 2 ? initials[..2] : initials;
+    }
+}
+
+<div class="asset-detail-head">
+    <div>
+        <nav class="asset-crumbs" aria-label="Breadcrumb">
+            <a asp-controller="Assets" asp-action="Index">Assets</a>
+            <span aria-hidden="true">&rsaquo;</span>
+            <a asp-controller="Assets" asp-action="Details" asp-route-id="@assignment.AssetID">@assignment.AssetCode</a>
+            <span aria-hidden="true">&rsaquo;</span>
+            <span>Return</span>
+        </nav>
+        <h2 class="asset-detail-title">Return asset</h2>
+        <div class="asset-detail-sub">Record that this unit came back. It becomes Available at the location you pick.</div>
+    </div>
+</div>
+
+@if (asset != null)
+{
+    <partial name="_AssetStrip" model="asset" />
+}
+
+<form asp-action="Return" asp-route-id="@Model.AssignmentID" method="post" class="register-form">
+    @Html.AntiForgeryToken()
+    <input type="hidden" asp-for="AssignmentID" />
+    <input type="hidden" asp-for="RequestID" />
+    <input type="hidden" asp-for="RowVersionBase64" />
+    <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
+
+    <div class="row g-3">
+        <div class="col-lg-8">
+            <div class="asset-card holder-card mb-3">
+                <span class="handover-avatar holder-avatar">@Initials(holder)</span>
+                <div class="flex-grow-1 min-w-0">
+                    <div class="holder-label">Currently with</div>
+                    <div class="holder-name">@holder</div>
+                    <div class="holder-meta">
+                        Assigned @assignment.AssignmentDate.ToString("MMM d, yyyy") by @assignment.AssignedByUser.FullName
+                        · @(daysOut == 0 ? "today" : daysOut == 1 ? "1 day ago" : $"{daysOut} days ago")
+                    </div>
+                </div>
+                @if (assignment.RequestID is not null)
+                {
+                    <a asp-controller="AssetRequests" asp-action="Details" asp-route-id="@assignment.RequestID" class="holder-link">View request &rarr;</a>
+                }
+                else
+                {
+                    <a asp-controller="Assets" asp-action="History" asp-route-id="@assignment.AssetID" asp-fragment="assignments" class="holder-link">View assignment &rarr;</a>
+                }
+            </div>
+
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head">
+                    <span class="register-step-num">1</span>
+                    <div class="register-step-title">Condition on return</div>
+                </div>
+                <div class="register-step-body">
+                    <div class="cond-tiles" role="radiogroup" aria-label="Condition on return">
+                        @foreach (var c in conditions)
+                        {
+                            var id = "ret" + c;
+                            <input type="radio" class="btn-check" name="ConditionOnReturn" id="@id" value="@c" autocomplete="off" checked="@(c == Model.ConditionOnReturn)" data-label="@DisplayText.Humanize(c.ToString())" />
+                            <label class="cond-tile cond-dot-@c.ToString().ToLowerInvariant() @(c == assignment.ConditionOnAssignment ? "was-issued" : "")" for="@id">
+                                <span class="cond-tile-dot" aria-hidden="true"></span>
+                                @DisplayText.Humanize(c.ToString())
+                                @if (c == assignment.ConditionOnAssignment)
+                                {
+                                    <small>when issued</small>
+                                }
+                            </label>
+                        }
+                    </div>
+                    <span asp-validation-for="ConditionOnReturn" class="text-danger"></span>
+                </div>
+            </div>
+
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head">
+                    <span class="register-step-num">2</span>
+                    <div class="register-step-title">Return to location</div>
+                </div>
+                <div class="register-step-body">
+                    @* A branch first, then one of its rooms; both typeable. The
+                       branch is not posted: it only narrows the rooms (site.js
+                       sabFilterByBranch). Starts on the asset's own branch. *@
+                    <div class="row g-3">
+                        <div class="col-md-5">
+                            <label for="branchSelect" class="form-label">Branch</label>
+                            <select id="branchSelect" class="form-select" data-combobox>
+                                <option value="">Select a branch</option>
+                                @foreach (var b in branches)
+                                {
+                                    <option value="@b.BranchID" selected="@(b.BranchID == startBranch)">@b.BranchName · @b.Rooms location@(b.Rooms == 1 ? "" : "s")</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-md-7">
+                            <label for="returnLocation" class="form-label">Location</label>
+                            <div class="input-icon">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 21s-7-6.2-7-12a7 7 0 0 1 14 0c0 5.8-7 12-7 12z" /><circle cx="12" cy="9" r="2.5" /></svg>
+                                <select asp-for="ReturnLocationID" id="returnLocation" class="form-select" data-combobox>
+                                    <option value="">-- Pick a branch first --</option>
+                                    @foreach (var l in locations)
+                                    {
+                                        <option value="@l.LocationID" data-branch="@l.BranchID" data-name="@l.LocationName"
+                                                data-sub="@(l.LocationID == asset?.CurrentLocationID ? "where it is kept now" : l.Description)"
+                                                selected="@(l.LocationID == Model.ReturnLocationID)">@l.LocationName</option>
+                                    }
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-text">It becomes Available there.</div>
+                    <span asp-validation-for="ReturnLocationID" class="text-danger"></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="handover-card">
+                <div class="bulk-summary-label">After this return</div>
+                <dl class="handover-rows mt-0">
+                    <div><dt>Status</dt><dd>Available</dd></div>
+                    <div><dt>Location</dt><dd id="afterLocation">@(picked?.LocationName ?? "Pick a location")</dd></div>
+                    <div><dt>Condition</dt><dd id="afterCondition">@DisplayText.Humanize(Model.ConditionOnReturn.ToString())</dd></div>
+                    <div><dt>Holder</dt><dd>No one</dd></div>
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    <div class="register-footer">
+        <span>Condition and location are required.</span>
+        <div class="d-flex" style="gap:8px;">
+            @if (Model.RequestID is not null)
+            {
+                <a asp-controller="AssetRequests" asp-action="Details" asp-route-id="@Model.RequestID" class="btn btn-outline-secondary">Cancel</a>
+            }
+            else
+            {
+                <a asp-controller="Assets" asp-action="Details" asp-route-id="@assignment.AssetID" class="btn btn-outline-secondary">Cancel</a>
+            }
+            <button type="submit" class="btn btn-primary">Confirm return</button>
+        </div>
+    </div>
+</form>
+
+@section Scripts {
+    @{
+        await Html.RenderPartialAsync("_ValidationScriptsPartial");
+    }
+    <script>
+        (function () {
+            // The summary follows the picks.
+            var loc = document.getElementById('returnLocation');
+            sabFilterByBranch(loc, document.getElementById('branchSelect'), {
+                notify: true,
+                hint: function (b) { return b ? 'Search a location' : '-- Pick a branch first --'; },
+                lock: function (b) { return !b; }
+            });
+            loc.addEventListener('change', function () {
+                var opt = loc.options[loc.selectedIndex];
+                document.getElementById('afterLocation').textContent = opt && opt.value ? opt.dataset.name : 'Pick a location';
+            });
+            document.querySelectorAll('input[name="ConditionOnReturn"]').forEach(function (r) {
+                r.addEventListener('change', function () {
+                    document.getElementById('afterCondition').textContent = r.dataset.label;
+                });
+            });
+        })();
+    </script>
+}

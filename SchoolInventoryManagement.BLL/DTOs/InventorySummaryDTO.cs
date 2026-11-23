@@ -1,0 +1,34 @@
+﻿using System.Collections.Generic;
+
+namespace SchoolInventoryManagement.BLL.DTOs
+{
+    // The reporting dashboard. Disposed assets are counted and shown but
+    // excluded from TotalValue and from the "in service" figures — a
+    // disposed unit is still a record, but it is not stock on hand.
+    public class InventorySummaryDTO
+    {
+        public int TotalAssets { get; set; }
+        public int InServiceAssets { get; set; }
+        public decimal TotalValue { get; set; }
+
+        public int AvailableCount { get; set; }
+        public int AssignedCount { get; set; }
+        public int UnderMaintenanceCount { get; set; }
+        public int DisposedCount { get; set; }
+        // Condition, not status: units still on record but marked Damaged.
+        public int DamagedCount { get; set; }
+
+        public int PendingRequestCount { get; set; }
+        // Units set aside for a request but not yet with the person: ready
+        // for pickup (borrow) or on its way (transfer). Not counted in
+        // AssignedCount, which is units actually with someone.
+        public int AwaitingHandoverCount { get; set; }
+        public int ActiveUserCount { get; set; }
+
+        public List<CountByLabelDTO> ByStatus { get; set; } = new();
+        public List<CountByLabelDTO> ByCondition { get; set; } = new();
+        public List<CountByLabelDTO> ByCategory { get; set; } = new();
+        public List<CountByLabelDTO> ByBranch { get; set; } = new();
+        public List<CountByLabelDTO> ByDepartment { get; set; } = new();
+    }
+}

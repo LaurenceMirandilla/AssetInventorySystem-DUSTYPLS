@@ -1,0 +1,52 @@
+﻿using System;
+using System.ComponentModel.DataAnnotations;
+using SchoolInventoryManagement.DAL.Entities.Enums;
+
+namespace SchoolInventoryManagement.BLL.DTOs
+{
+    // No AssetCode: it is generated from the model's category prefix
+    // (CHAIR-0001, CHAIR-0002, ...) when the asset is saved.
+    public class CreateAssetDTO
+    {
+        [Required]
+        public int ModelID { get; set; }
+
+        [Required]
+        [MaxLength(150)]
+        public string AssetName { get; set; } = null!;
+
+        [MaxLength(500)]
+        public string? Description { get; set; }
+
+        [MaxLength(100)]
+        public string? SerialNumber { get; set; }
+
+        public DateTime? AcquisitionDate { get; set; }
+
+        public decimal? AcquisitionCost { get; set; }
+
+        [MaxLength(255)]
+        public string? WarrantyInformation { get; set; }
+
+        // Photo or PDF of the warranty card / receipt.
+        [MaxLength(500)]
+        public string? WarrantyFileURL { get; set; }
+
+        [MaxLength(500)]
+        public string? ImageURL { get; set; }
+
+        // "Add barcode" on the form. On: the asset is saved with its barcode.
+        public bool CreateBarcode { get; set; }
+
+        public ConditionStatus Condition { get; set; } = ConditionStatus.Good;
+
+        public int? CurrentLocationID { get; set; }
+
+        // Must belong to BranchID.
+        [Required]
+        public int DepartmentID { get; set; }
+
+        [Required]
+        public int BranchID { get; set; }
+    }
+}

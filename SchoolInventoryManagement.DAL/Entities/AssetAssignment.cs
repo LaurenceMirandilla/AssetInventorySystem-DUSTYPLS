@@ -1,0 +1,55 @@
+﻿using System;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+using SchoolInventoryManagement.DAL.Entities.Enums;
+
+namespace SchoolInventoryManagement.DAL.Entities
+{
+    public class AssetAssignment
+    {
+        [Key]
+        public int AssignmentID { get; set; }
+
+        public int AssetID { get; set; }
+        public int AssignedToUserID { get; set; }
+        public int AssignedByUserID { get; set; }
+
+        public DateTime AssignmentDate { get; set; }
+
+        [Required]
+        public ConditionStatus ConditionOnAssignment { get; set; }
+
+        public DateTime? ReturnDate { get; set; }
+
+        public ConditionStatus? ConditionOnReturn { get; set; }
+
+        [MaxLength(500)]
+        public string? Remarks { get; set; }
+
+        // Set when the unit went out on a request. Null for a direct
+        // assignment made from the asset page.
+        public int? RequestID { get; set; }
+
+        // The unit's department just before this assignment. A unit that
+        // went out on a borrow or temporary transfer goes back to it on
+        // return (BLL AssignmentDepartment). Added by script 016; null on
+        // older rows.
+        public int? PreviousDepartmentID { get; set; }
+
+        [Timestamp]
+        public byte[] RowVersion { get; set; } = null!;
+
+        // Navigation Properties
+        [ForeignKey("AssetID")]
+        public Asset Asset { get; set; } = null!;
+
+        [ForeignKey("AssignedToUserID")]
+        public User AssignedToUser { get; set; } = null!;
+
+        [ForeignKey("AssignedByUserID")]
+        public User AssignedByUser { get; set; } = null!;
+
+        [ForeignKey(nameof(RequestID))]
+        public AssetRequest? Request { get; set; }
+    }
+}

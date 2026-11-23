@@ -1,0 +1,298 @@
+﻿@model SchoolInventoryManagement.Web.ViewModels.AssetHistoryViewModel
+@inject SchoolInventoryManagement.Web.Helpers.AuditText AuditText
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@{
+    ViewData["Title"] = "Asset History";
+    var asset = Model.Asset;
+}
+
+@functions {
+    static string Initials(string name)
+    {
+        var initials = string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(p => p[0])).ToUpperInvariant();
+        return initials.Length > 2 ? initials[..2] : initials;
+    }
+
+    static string CondClass(ConditionStatus c) => "cond-" + c.ToString().ToLowerInvariant();
+}
+
+@* One person with their initials, as in the mockup's table cells. *@
+@{
+    void Person(string name)
+    {
+        <span class="history-person">
+            <span class="history-avatar">@Initials(name)</span>
+            @name
+        </span>
+    }
+
+    void Tab(string id, string label, int count, bool active, string icon)
+    {
+        <li class="nav-item" role="presentation">
+            <button type="button" class="nav-link @(active ? "active" : "")" id="tab-@id" data-bs-toggle="tab"
+                    data-bs-target="#pane-@id" role="tab" aria-controls="pane-@id" aria-selected="@(active ? "true" : "false")">
+                @Html.Raw(icon)
+                @label
+                <span class="history-tab-count">@count</span>
+            </button>
+        </li>
+    }
+}
+
+<div class="asset-detail-head">
+    <div>
+        <nav class="asset-crumbs" aria-label="Breadcrumb">
+            <a asp-action="Index">Assets</a>
+            <span aria-hidden="true">&rsaquo;</span>
+            <a asp-action="Details" asp-route-id="@asset.AssetID">@asset.AssetCode</a>
+            <span aria-hidden="true">&rsaquo;</span>
+            <span>History</span>
+        </nav>
+        <h2 class="asset-detail-title">History — @asset.AssetName</h2>
+        <div class="asset-detail-sub">
+            <span class="asset-code-chip">@asset.AssetCode</span>
+            <span>Everything that has happened to this unit, newest first.</span>
+        </div>
+    </div>
+    <div class="asset-detail-actions">
+        <a asp-action="Details" asp-route-id="@asset.AssetID" class="btn btn-outline-secondary">&larr; Back to asset</a>
+    </div>
+</div>
+
+<div class="sab-table-card history-card">
+    <ul class="nav history-tabs" role="tablist">
+        @{
+            Tab("assignments", "Assignments", Model.Assignments.Count, true,
+                "<svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"8\" r=\"4\"/><path d=\"M4 21c0-4 4-6 8-6s8 2 8 6\"/></svg>");
+            Tab("movements", "Movements", Model.Movements.Count, false,
+                "<svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 8h14l-3-3M20 16H6l3 3\"/></svg>");
+            Tab("disposals", "Disposals", Model.Disposals.Count, false,
+                "<svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3\"/></svg>");
+            Tab("audit", "Audit log", Model.AuditEntries.Count, false,
+                "<svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" aria-hidden=\"true\"><path d=\"M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01\"/></svg>");
+        }
+    </ul>
+
+    <div class="tab-content">
+        <div class="tab-pane fade show active" id="pane-assignments" role="tabpanel" data-pager data-page-size="10" data-noun="assignments" aria-labelledby="tab-assignments">
+            <div class="history-caption"><span>Who had this unit and in what condition</span><span>Newest first</span></div>
+            @if (Model.Assignments.Any())
+            {
+                <div class="table-responsive">
+                    <table class="table asset-table history-table">
+                        <thead><tr><th>Assigned to</th><th>Assigned by</th><th>Date</th><th>Return date</th><th>Condition</th></tr></thead>
+                        <tbody>
+                            @foreach (var a in Model.Assignments)
+                            {
+                                <tr data-pager-item>
+                                    <td>@{ Person(a.AssignedToUser.FullName); }</td>
+                                    <td>@{ Person(a.AssignedByUser.FullName); }</td>
+                                    <td>@a.AssignmentDate.ToString("MMM d, yyyy")</td>
+                                    <td>
+                                        @if (a.EndedAsPermanentTransfer)
+                                        {
+                                            @* Delivered for good: it stayed in the room, nobody gave it back. *@
+                                            @a.ReturnDate!.Value.ToString("MMM d, yyyy")
+                                            <div class="history-note">Transferred permanently</div>
+                                        }
+                                        else if (a.EndedByCancellation)
+                                        {
+                                            @a.ReturnDate!.Value.ToString("MMM d, yyyy")
+                                            <div class="history-note">Request cancelled before handover</div>
+                                        }
+                                        else if (a.ReturnDate.HasValue)
+                                        {
+                                            @a.ReturnDate.Value.ToString("MMM d, yyyy")
+                                        }
+                                        else
+                                        {
+                                            <span class="history-open">Not returned</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <span class="asset-pill history-pill @CondClass(a.ConditionOnAssignment)">@DisplayText.Humanize(a.ConditionOnAssignment.ToString())</span>
+                                        @* The condition "on return" only means something for a real return. *@
+                                        @if (a.ConditionOnReturn.HasValue && !a.EndedAsPermanentTransfer && !a.EndedByCancellation)
+                                        {
+                                            <span class="history-arrow">&rarr;</span>
+                                            <span class="asset-pill history-pill @CondClass(a.ConditionOnReturn.Value)">@DisplayText.Humanize(a.ConditionOnReturn.Value.ToString())</span>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="history-foot">
+                    <span data-pager-range></span>
+                    <div class="d-flex align-items-center flex-wrap" style="gap:8px;">
+                        <span class="text-muted">Show</span>
+                        <select class="form-select form-select-sm rq-size" data-pager-size aria-label="Rows per page">
+                            <option value="10" selected>10</option>
+                            <option value="20">20</option>
+                            <option value="50">50</option>
+                        </select>
+                        <span class="text-muted">per page</span>
+                        <div class="d-flex flex-wrap" style="gap:6px;" data-pager-buttons></div>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="history-empty">No assignments recorded.</div>
+            }
+        </div>
+
+        <div class="tab-pane fade" id="pane-movements" role="tabpanel" data-pager data-page-size="10" data-noun="movements" aria-labelledby="tab-movements">
+            <div class="history-caption"><span>Where this unit has been moved</span><span>Newest first</span></div>
+            @if (Model.Movements.Any())
+            {
+                <div class="table-responsive">
+                    <table class="table asset-table history-table">
+                        <thead><tr><th>From</th><th>To</th><th>Moved by</th><th>Date</th><th>Reason</th></tr></thead>
+                        <tbody>
+                            @foreach (var m in Model.Movements)
+                            {
+                                <tr data-pager-item>
+                                    <td>@DisplayText.Or(m.SourceLocationName, "With a person")</td>
+                                    <td class="fw-semibold">@m.DestinationLocationName</td>
+                                    <td>@{ Person(m.MovedByUser.FullName); }</td>
+                                    <td>@m.DateMoved.ToString("MMM d, yyyy")</td>
+                                    <td class="asset-muted">@m.ReasonForTransfer</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="history-foot">
+                    <span data-pager-range></span>
+                    <div class="d-flex align-items-center flex-wrap" style="gap:8px;">
+                        <span class="text-muted">Show</span>
+                        <select class="form-select form-select-sm rq-size" data-pager-size aria-label="Rows per page">
+                            <option value="10" selected>10</option>
+                            <option value="20">20</option>
+                            <option value="50">50</option>
+                        </select>
+                        <span class="text-muted">per page</span>
+                        <div class="d-flex flex-wrap" style="gap:6px;" data-pager-buttons></div>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="history-empty">No movements recorded.</div>
+            }
+        </div>
+
+        <div class="tab-pane fade" id="pane-disposals" role="tabpanel" data-pager data-page-size="10" data-noun="disposal records" aria-labelledby="tab-disposals">
+            <div class="history-caption"><span>Disposals, and any that were later restored</span><span>Newest first</span></div>
+            @if (Model.Disposals.Any())
+            {
+                <div class="table-responsive">
+                    <table class="table asset-table history-table">
+                        <thead><tr><th>Date</th><th>Reason</th><th>Method</th><th>Approved by</th><th>Restored</th></tr></thead>
+                        <tbody>
+                            @foreach (var d in Model.Disposals)
+                            {
+                                <tr data-pager-item>
+                                    <td>@d.DisposalDate.ToString("MMM d, yyyy")</td>
+                                    <td>@d.ReasonForDisposal</td>
+                                    <td>@d.DisposalMethod</td>
+                                    <td>@{ Person(d.ApprovedByUser.FullName); }</td>
+                                    <td>
+                                        @if (d.RestoredDate.HasValue)
+                                        {
+                                            @d.RestoredDate.Value.ToString("MMM d, yyyy")
+                                        }
+                                        else
+                                        {
+                                            <span class="history-disposed">Still disposed</span>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="history-foot">
+                    <span data-pager-range></span>
+                    <div class="d-flex align-items-center flex-wrap" style="gap:8px;">
+                        <span class="text-muted">Show</span>
+                        <select class="form-select form-select-sm rq-size" data-pager-size aria-label="Rows per page">
+                            <option value="10" selected>10</option>
+                            <option value="20">20</option>
+                            <option value="50">50</option>
+                        </select>
+                        <span class="text-muted">per page</span>
+                        <div class="d-flex flex-wrap" style="gap:6px;" data-pager-buttons></div>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="history-empty">No disposal records.</div>
+            }
+        </div>
+
+        <div class="tab-pane fade" id="pane-audit" role="tabpanel" data-pager data-page-size="10" data-noun="audit entries" aria-labelledby="tab-audit">
+            <div class="history-caption"><span>Every recorded change to this unit, and who made it</span><span>Newest first</span></div>
+            @if (Model.AuditEntries.Any())
+            {
+                <div class="table-responsive">
+                    <table class="table asset-table history-table">
+                        <thead><tr><th>Action</th><th>By</th><th>Date</th><th>Details</th></tr></thead>
+                        <tbody>
+                            @foreach (var log in Model.AuditEntries)
+                            {
+                                <tr data-pager-item>
+                                    <td class="fw-semibold">@log.ActionPerformed</td>
+                                    <td>
+                                        @{ Person(log.User.FirstName + " " + log.User.LastName); }
+                                        <div class="asset-muted small mt-1">@log.User.Role.RoleName</div>
+                                    </td>
+                                    <td class="text-nowrap">@log.LogDateTime.ToString("MMM d, yyyy h:mm tt")</td>
+                                    <td class="asset-muted history-details">@DisplayText.Or(await AuditText.FormatAsync(log.Description), "No details")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="history-foot">
+                    <span data-pager-range></span>
+                    <div class="d-flex align-items-center flex-wrap" style="gap:8px;">
+                        <span class="text-muted">Show</span>
+                        <select class="form-select form-select-sm rq-size" data-pager-size aria-label="Rows per page">
+                            <option value="10" selected>10</option>
+                            <option value="20">20</option>
+                            <option value="50">50</option>
+                        </select>
+                        <span class="text-muted">per page</span>
+                        <div class="d-flex flex-wrap" style="gap:6px;" data-pager-buttons></div>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="history-empty">No audit entries.</div>
+            }
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        // Remember the open tab in the URL (#movements etc.), so reloading or
+        // sharing the link lands on the same list.
+        (function () {
+            var hash = location.hash.replace('#', '');
+            var btn = hash && document.getElementById('tab-' + hash);
+            if (btn) bootstrap.Tab.getOrCreateInstance(btn).show();
+
+            document.querySelectorAll('.history-tabs [data-bs-toggle="tab"]').forEach(function (b) {
+                b.addEventListener('shown.bs.tab', function () {
+                    history.replaceState(null, '', '#' + b.id.replace('tab-', ''));
+                });
+            });
+        })();
+    </script>
+}

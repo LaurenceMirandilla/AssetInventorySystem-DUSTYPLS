@@ -1,0 +1,99 @@
+﻿using System;
+using System.ComponentModel.DataAnnotations;
+using SchoolInventoryManagement.DAL.Entities.Enums;
+
+namespace SchoolInventoryManagement.Web.ViewModels
+{
+    // No asset code here: it is generated from the branch, location and
+    // the model's category (M-LIB-CHR-0001, ...) when the asset is saved.
+    public class AssetCreateViewModel
+    {
+        [Required(ErrorMessage = "Pick a model from the list.")]
+        [Display(Name = "Model")]
+        public int? ModelID { get; set; }
+
+        [Required(ErrorMessage = "Enter a name for the asset.")]
+        [MaxLength(150)]
+        [Display(Name = "Name")]
+        public string AssetName { get; set; } = null!;
+
+        [MaxLength(500)]
+        public string? Description { get; set; }
+
+        [MaxLength(100)]
+        [Display(Name = "Serial number")]
+        public string? SerialNumber { get; set; }
+
+        [Display(Name = "Acquisition date")]
+        public DateTime? AcquisitionDate { get; set; }
+
+        [Range(0, 9999999999.99)]
+        [Display(Name = "Acquisition cost")]
+        public decimal? AcquisitionCost { get; set; }
+
+        [MaxLength(255)]
+        [Display(Name = "Warranty")]
+        public string? WarrantyInformation { get; set; }
+
+        [Display(Name = "Add barcode")]
+        public bool CreateBarcode { get; set; }
+
+        public ConditionStatus Condition { get; set; } = ConditionStatus.Good;
+
+        [Display(Name = "Location")]
+        public int? CurrentLocationID { get; set; }
+
+        // Only the chosen branch's departments are offered.
+        [Required(ErrorMessage = "Pick a department.")]
+        [Display(Name = "Department")]
+        public int? DepartmentID { get; set; }
+
+        [Display(Name = "Photo")]
+        public IFormFile? ImageFile { get; set; }
+
+        [Display(Name = "Warranty photo or file")]
+        public IFormFile? WarrantyFile { get; set; }
+
+        // Not on the form: the branch of the person registering it
+        // (AssetsController), with the chosen department's main room.
+        [Display(Name = "Branch")]
+        public int BranchID { get; set; }
+    }
+
+    // Where new assets go, since the register forms have no Branch or
+    // Location: one branch, its departments, and each one's main room.
+    public class AssetPlace
+    {
+        public int BranchID { get; set; }
+        public string BranchName { get; set; } = null!;
+        public string BranchCode { get; set; } = null!;
+        public List<AssetPlaceDepartment> Departments { get; set; } = new();
+        public AssetPlaceDepartment? Property => Departments.FirstOrDefault(d => d.IsProperty);
+    }
+
+    public class AssetPlaceDepartment
+    {
+        public int DepartmentID { get; set; }
+        public string DepartmentName { get; set; } = null!;
+        public bool IsProperty { get; set; }
+        public int? RoomID { get; set; }
+        public string? RoomName { get; set; }
+        public string? RoomCode { get; set; }
+    }
+
+    // One entry in the register forms' model search: the model, its
+    // category code, and the next number free in that category.
+    public class ModelCodeOption
+    {
+        public int ModelID { get; set; }
+        public string ModelName { get; set; } = null!;
+        public string CategoryName { get; set; } = null!;
+        public string CodePrefix { get; set; } = null!;
+        public int NextNumber { get; set; }
+        // The model's next "Unit N" (UnitNumbers): 1 for a model with no units.
+        public int NextUnit { get; set; } = 1;
+
+        // What the search box shows and matches on.
+        public string Label => $"{ModelName} — {CategoryName}";
+    }
+}

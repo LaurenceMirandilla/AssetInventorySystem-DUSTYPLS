@@ -1,0 +1,118 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using SchoolInventoryManagement.DAL.Entities.Enums;
+
+namespace SchoolInventoryManagement.Web.ViewModels
+{
+    // Codes are generated from the model's category prefix, carrying on
+    // from the highest number already used -- nobody types a prefix or a
+    // starting number.
+    public class AssetBulkCreateViewModel
+    {
+        [Required(ErrorMessage = "Pick a model from the list.")]
+        [Display(Name = "Model")]
+        public int? ModelID { get; set; }
+
+        [Range(1, 200, ErrorMessage = "Register between 1 and 200 at a time.")]
+        [Display(Name = "How many")]
+        public int Quantity { get; set; } = 10;
+
+        [Required(ErrorMessage = "Give the units a name.")]
+        [MaxLength(130)]
+        [Display(Name = "Name")]
+        public string BaseName { get; set; } = null!;
+
+        [Display(Name = "Serial numbers")]
+        public string? SerialNumbers { get; set; }
+
+        [MaxLength(500)]
+        public string? Description { get; set; }
+
+        [Display(Name = "Acquisition date")]
+        public DateTime? AcquisitionDate { get; set; }
+
+        [Range(0, 99999999)]
+        [Display(Name = "Cost per unit")]
+        public decimal? AcquisitionCost { get; set; }
+
+        [MaxLength(255)]
+        [Display(Name = "Warranty")]
+        public string? WarrantyInformation { get; set; }
+
+        // One file for the whole batch -- the delivery's warranty card or
+        // receipt -- linked from every unit.
+        [Display(Name = "Warranty photo or file")]
+        public IFormFile? WarrantyFile { get; set; }
+
+        public ConditionStatus Condition { get; set; } = ConditionStatus.New;
+
+        [Display(Name = "Location")]
+        public int? CurrentLocationID { get; set; }
+
+        // Only the chosen branch's departments are offered.
+        [Required(ErrorMessage = "Pick a department.")]
+        [Display(Name = "Department")]
+        public int? DepartmentID { get; set; }
+
+        // Not on the form: the branch of the department that asked for it
+        // (a requisition) or of the person registering (AssetsController).
+        [Display(Name = "Branch")]
+        public int? BranchID { get; set; }
+
+        [Display(Name = "Add barcode")]
+        public bool CreateBarcode { get; set; }
+
+        // Registering the units bought for this new-item request.
+        public int? NewItemRequestID { get; set; }
+
+        // ...and which of its items (lines) the first batch is for
+        // (Scripts/037).
+        public int? NewItemRequestItemID { get; set; }
+
+        // More items in the same delivery, each its own model (Scripts/037):
+        // "+ Add another item". Everything under "Shared by every unit"
+        // applies to them too.
+        public List<BulkExtraBatch> Extras { get; set; } = new();
+    }
+
+    public class BulkExtraBatch
+    {
+        public int? ModelID { get; set; }
+        public int Quantity { get; set; }
+        public string? BaseName { get; set; }
+        // For a requisition: the item it is for.
+        public int? NewItemRequestItemID { get; set; }
+    }
+
+    // The new-item request whose units are being registered: shown at the
+    // top of Bulk register, with what is still to be registered.
+    public class BulkTicketInfo
+    {
+        public int RequestID { get; set; }
+        public string RequesterName { get; set; } = null!;
+        public string DepartmentName { get; set; } = null!;
+        public int BranchID { get; set; }
+        public string BranchName { get; set; } = null!;
+        public int PropertyDepartmentID { get; set; }
+        public int Ordered { get; set; }
+        public int Registered { get; set; }
+        public List<BulkTicketLine> Lines { get; set; } = new();
+    }
+
+    public class BulkTicketLine
+    {
+        public string ItemName { get; set; } = null!;
+        // The requisition line's description (or the purchase order's),
+        // to start "Add a new model" with.
+        public string? Description { get; set; }
+        public int? ModelID { get; set; }
+        public int Quantity { get; set; }
+        public decimal? EstimatedUnitPrice { get; set; }
+        public int Registered { get; set; }
+        public int NewItemRequestItemID { get; set; }
+        public int Left => Math.Max(0, Quantity - Registered);
+        // The model's name when the line names one.
+        public string? ModelName { get; set; }
+    }
+}

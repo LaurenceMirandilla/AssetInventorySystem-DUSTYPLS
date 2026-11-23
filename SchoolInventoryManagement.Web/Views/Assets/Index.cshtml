@@ -1,0 +1,764 @@
+﻿@model SchoolInventoryManagement.Web.ViewModels.AssetIndexViewModel
+@using Microsoft.AspNetCore.Mvc.Rendering
+@using SchoolInventoryManagement.DAL.Constants
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@inject SchoolInventoryManagement.BLL.Interfaces.ISupplyService SupplyCounts
+@{
+    ViewData["Title"] = User.IsInRole(RoleNames.AssetOfficer) || User.IsInRole(RoleNames.Administrator) ? "Property" : "Items";
+    // What this page shows, for the live updates (_Layout, site.js).
+    ViewData["LiveScope"] = "assets";
+    // For the Assets / Supplies switch. Disposed units are never counted,
+    // so the number stays the same whichever filters are on.
+    var supplyScope = await SupplyCounts.GetBranchScopeAsync(
+        int.Parse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)!.Value));
+    var supplyTotal = await SupplyCounts.CountSuppliesAsync(supplyScope);
+    var assetTotal = ViewBag.AssetTotal is int total ? total : Model.GrandTotalCount;
+
+    // Teachers and Staff never reach this page (they get the catalogue), so
+    // everyone here may see the units. Only these two may change them.
+    var canManage = User.IsInRole(RoleNames.AssetOfficer) || User.IsInRole(RoleNames.Administrator);
+    // Mirrors the [Authorize] on AssetsController.History.
+    var canViewHistory = canManage || User.IsInRole(RoleNames.Principal);
+
+    // The current filters as route values, so the pager, the export link and
+    // the page-size picker all carry the search along. Empty values are left
+    // out of the URL entirely.
+    var exportRoute = new Dictionary<string, string>();
+    void AddRoute(string key, object? value)
+    {
+        if (value != null) { exportRoute[key] = value.ToString()!; }
+    }
+    AddRoute("keyword", string.IsNullOrWhiteSpace(Model.Keyword) ? null : Model.Keyword);
+    AddRoute("categoryId", Model.CategoryId);
+    AddRoute("modelId", Model.ModelId);
+    AddRoute("branchId", Model.BranchId);
+    AddRoute("locationId", Model.LocationId);
+    AddRoute("departmentId", Model.DepartmentId);
+    AddRoute("userId", Model.UserId);
+    AddRoute("holder", Model.Holder);
+    AddRoute("status", Model.Status);
+    AddRoute("condition", Model.Condition);
+    AddRoute("includeDisposed", Model.IncludeDisposed ? "true" : null);
+
+    Func<int, Dictionary<string, string>> pageRoute = n =>
+    {
+        var r = new Dictionary<string, string>(exportRoute) { ["page"] = n.ToString() };
+        if (Model.PageSize != 20) { r["pageSize"] = Model.PageSize.ToString(); }
+        return r;
+    };
+
+    // Pager window: first, last, and the pages either side of the current
+    // one -- "1 2 3 … 14" on page one, as in the mockup.
+    var lastPage = Model.TotalPages;
+    var windowStart = Math.Max(1, Model.Page - 1);
+    var windowEnd = Math.Min(lastPage, Model.Page + 1);
+    if (Model.Page <= 2) { windowEnd = Math.Min(lastPage, 3); }
+    if (Model.Page >= lastPage - 1) { windowStart = Math.Max(1, lastPage - 2); }
+
+    var filtersOpen = Model.ActiveFilterCount > 0;
+}
+
+@functions {
+    static string StatusLabel(AssetStatus s) =>
+        s == AssetStatus.UnderMaintenance ? "Maintenance" : DisplayText.AssetStatusLabel(s);
+
+    static string Initials(string name)
+    {
+        var initials = string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(p => p[0])).ToUpperInvariant();
+        return initials.Length > 2 ? initials[..2] : initials;
+    }
+}
+
+@if (TempData["ErrorMessage"] != null)
+{
+    <div class="alert alert-danger">@TempData["ErrorMessage"]</div>
+}
+
+<div class="sab-page-head">
+    <div>
+        <h2>@ViewData["Title"]</h2>
+        <p class="sab-page-sub">
+            @if (Model.HasFilters)
+            {
+                <text>@Model.TotalFilteredCount of @Model.GrandTotalCount registered unit@(Model.GrandTotalCount == 1 ? "" : "s") match@(Model.TotalFilteredCount == 1 ? "es" : "") your filters</text>
+            }
+            else
+            {
+                <text>@Model.GrandTotalCount registered unit@(Model.GrandTotalCount == 1 ? "" : "s") across all branches</text>
+            }
+            @if (!Model.ShowsDisposed && Model.DisposedCount > 0)
+            {
+                <text> &middot; @Model.DisposedCount disposed hidden</text>
+            }
+        </p>
+    </div>
+    <div class="sab-page-actions">
+        <a asp-action="ExportAssets" asp-all-route-data="exportRoute" class="btn btn-outline-secondary">Export CSV</a>
+
+        @if (canManage)
+        {
+            <partial name="_IncomingButton" model="@(ViewBag.IncomingCount is int inc ? inc : 0)" />
+            <partial name="_InventoryMenu" model="@(ViewBag.RedTagCount is int n ? n : 0)" />
+            <a asp-controller="AssetAssignments" asp-action="Department" class="btn btn-outline-secondary">Assign to department</a>
+            <a asp-action="BulkCreate" class="btn btn-outline-secondary">+ Bulk register</a>
+            <a asp-action="Import" class="btn btn-outline-secondary">Import items</a>
+            <a asp-controller="AssetRequests" asp-action="Borrowers" class="btn btn-outline-secondary">Borrowers</a>
+            @* Red tag mode: rows get a tick box; tick the units and red-tag them together. *@
+            <button type="button" class="btn btn-outline-danger" id="redTagMode" aria-pressed="false">Red tag</button>
+            <partial name="_NewItemMenu" />
+        }
+    </div>
+</div>
+
+<partial name="_ItemsSwitch" model="@(("Assets", assetTotal, supplyTotal))" />
+
+@* The barcode box submits on its own; its inputs point at this form with
+   the form attribute, so it can sit inside the filter toolbar without
+   nesting one form in another. *@
+<form id="assetScan" asp-action="Scan" method="get"></form>
+
+<div class="sab-table-card asset-list">
+    <form id="assetFilters" method="get">
+        <div class="asset-toolbar">
+            <label class="asset-search">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                <input type="text" name="keyword" id="assetKeyword" value="@Model.Keyword" autocomplete="off"
+                       placeholder="Search name, code, serial..." aria-label="Search assets by name, code or serial" />
+                <kbd>/</kbd>
+            </label>
+
+            @* A USB barcode scanner types the code and presses Enter, which
+               opens the asset. *@
+            <div class="dropdown">
+                <button type="button" class="asset-tool-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" id="scanToggle">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6v12M7 6v12M11 6v12M14 6v12M18 6v12M20 6v12" /></svg>
+                    Scan barcode
+                </button>
+                <div class="dropdown-menu asset-scan-menu" aria-labelledby="scanToggle">
+                    <label for="scanCode" class="form-label small text-muted mb-1">Scan or type an asset code</label>
+                    <div class="d-flex" style="gap:6px;">
+                        <input name="code" id="scanCode" form="assetScan" class="form-control form-control-sm" autocomplete="off" placeholder="FAN-0001" />
+                        <button type="submit" form="assetScan" class="btn btn-primary btn-sm">Open</button>
+                    </div>
+                </div>
+            </div>
+
+            @* All the filters in one dropdown under the Filters button; Apply
+               submits the form, Reset clears everything. *@
+            <div class="dropdown">
+                <button type="button" class="asset-tool-btn @(filtersOpen ? "active" : "")" data-bs-toggle="dropdown"
+                    data-bs-auto-close="outside" aria-expanded="false" id="assetFilterToggle">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z" /></svg>
+                Filters
+                @if (Model.ActiveFilterCount > 0)
+                {
+                    <span class="asset-filter-count">@Model.ActiveFilterCount</span>
+                }
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 9l6 6 6-6z" /></svg>
+            </button>
+                <div class="dropdown-menu dropdown-menu-end asset-filter-menu" aria-labelledby="assetFilterToggle">
+                <div class="asset-filter-panel">
+                    @* Order follows the hierarchy: Category > Model, then
+                       Branch > Location / Department. Every list is usable on its
+                       own; picking a parent narrows its children, and picking a
+                       child selects its parent. The script at the bottom does it. *@
+                    <div>
+                        <label for="fCategory" class="form-label">Category</label>
+                        <select name="categoryId" id="fCategory" class="form-select form-select-sm">
+                            <option value="">All categories</option>
+                            @foreach (var c in Model.CategoryOptions)
+                            {
+                                <option value="@c.CategoryID" selected="@(Model.CategoryId == c.CategoryID)">@c.CategoryName</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div>
+                        <label for="fModel" class="form-label">Model</label>
+                        <select name="modelId" id="fModel" class="form-select form-select-sm">
+                            <option value="">All models</option>
+                            @foreach (var g in Model.ModelOptions.GroupBy(m => m.CategoryName))
+                            {
+                                <optgroup label="@g.Key">
+                                    @foreach (var m in g)
+                                    {
+                                        <option value="@m.ModelID" data-parent="@m.CategoryID" selected="@(Model.ModelId == m.ModelID)">@m.ModelName</option>
+                                    }
+                                </optgroup>
+                            }
+                        </select>
+                    </div>
+
+                    <div>
+                        <label for="fBranch" class="form-label">Branch</label>
+                        <select name="branchId" id="fBranch" class="form-select form-select-sm">
+                            <option value="">All branches</option>
+                            @foreach (var b in Model.BranchOptions)
+                            {
+                                <option value="@b.BranchID" selected="@(Model.BranchId == b.BranchID)">@b.BranchName</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div>
+                        <label for="fLocation" class="form-label">Location</label>
+                        <select name="locationId" id="fLocation" class="form-select form-select-sm">
+                            <option value="">All locations</option>
+                            @foreach (var g in Model.LocationOptions.GroupBy(l => l.BranchName))
+                            {
+                                <optgroup label="@g.Key">
+                                    @foreach (var l in g)
+                                    {
+                                        <option value="@l.LocationID" data-parent="@l.BranchID" selected="@(Model.LocationId == l.LocationID)">@l.LocationName</option>
+                                    }
+                                </optgroup>
+                            }
+                        </select>
+                    </div>
+
+                    <div>
+                        <label for="fDepartment" class="form-label">Department</label>
+                        <select name="departmentId" id="fDepartment" class="form-select form-select-sm">
+                            <option value="">All departments</option>
+                            @foreach (var g in Model.DepartmentOptions.GroupBy(d => d.BranchName))
+                            {
+                                <optgroup label="@g.Key">
+                                    @foreach (var d in g)
+                                    {
+                                        <option value="@d.DepartmentID" data-parent="@d.BranchID" selected="@(Model.DepartmentId == d.DepartmentID)">@d.DepartmentName</option>
+                                    }
+                                </optgroup>
+                            }
+                        </select>
+                    </div>
+
+                    @* Who holds the unit now. Typeable. Narrowed by Department
+                       (only that department's people) or, with no department,
+                       by Branch. Picking someone doesn't change Department:
+                       that filters the unit's own department, which can differ
+                       from the holder's. *@
+                    <div>
+                        <label for="fUser" class="form-label">User</label>
+                        <select name="userId" id="fUser" class="form-select form-select-sm" data-combobox>
+                            <option value="">All users</option>
+                            @foreach (var g in Model.UserOptions.GroupBy(u => u.DepartmentID))
+                            {
+                                var first = g.First();
+                                <optgroup label="@first.DepartmentName · @first.BranchName">
+                                    @foreach (var u in g)
+                                    {
+                                        <option value="@u.UserID" data-parent="@u.DepartmentID" data-branch="@u.BranchID"
+                                                selected="@(Model.UserId == u.UserID)">@u.FullName@(u.IsActive ? "" : " (inactive)")</option>
+                                    }
+                                </optgroup>
+                            }
+                        </select>
+                    </div>
+
+                    @* A person, a department (assigned with no person: cannot
+                       be borrowed), or nobody. *@
+                    <div>
+                        <label for="fHolder" class="form-label">Held by</label>
+                        <select name="holder" id="fHolder" class="form-select form-select-sm">
+                            <option value="">Anyone or nobody</option>
+                            <option value="person" selected="@(Model.Holder == "person")">Out with a borrower</option>
+                            <option value="none" selected="@(Model.Holder == "none")">In Property stock</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label for="fStatus" class="form-label">Status</label>
+                        @Html.DropDownList("status", (IEnumerable<SelectListItem>)ViewBag.StatusFilter,
+                             "All statuses", new { @class = "form-select form-select-sm", id = "fStatus" })
+                    </div>
+
+                    <div>
+                        <label for="fCondition" class="form-label">Condition</label>
+                        @Html.DropDownList("condition", (IEnumerable<SelectListItem>)ViewBag.ConditionFilter,
+                             "All conditions", new { @class = "form-select form-select-sm", id = "fCondition" })
+                    </div>
+
+                    <div class="asset-filter-actions">
+                        @* Off by default: the list is what the school still has.
+                           Choosing Disposed under status shows them either way. *@
+                        <div class="form-check mb-0">
+                            <input class="form-check-input" type="checkbox" name="includeDisposed" value="true" id="fIncludeDisposed"
+                                   checked="@Model.IncludeDisposed" />
+                            <label class="form-check-label small text-nowrap" for="fIncludeDisposed">Include disposed</label>
+                        </div>
+                        <a asp-action="Index" class="btn btn-outline-secondary btn-sm">Reset</a>
+                        <button type="submit" class="btn btn-primary btn-sm">Apply</button>
+                    </div>
+                </div>
+                </div>
+            </div>
+
+            <span class="asset-count">
+                @if (Model.TotalFilteredCount == 0)
+                {
+                    <text>No matches</text>
+                }
+                else
+                {
+                    <text>Showing <strong>@Model.FirstRowNumber–@Model.LastRowNumber</strong> of @Model.TotalFilteredCount</text>
+                }
+            </span>
+        </div>
+
+    </form>
+
+    @if (Model.TotalFilteredCount > 0)
+    {
+        <div class="table-responsive">
+            <table class="table asset-table">
+                <thead>
+                    <tr>
+                        <th class="rt-col" hidden><input type="checkbox" class="form-check-input" id="rtAll" aria-label="Tick every unit on this page that can be red tagged" /></th>
+                        <th>Code</th>
+                        <th>Asset</th>
+                        <th>Category</th>
+                        <th>Condition</th>
+                        <th>Status</th>
+                        <th>Holder</th>
+                        <th><span class="visually-hidden">Actions</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var asset in Model.Assets)
+                    {
+                        // Same rule as the Edit button on Details: a unit that
+                        // is out with someone cannot be edited.
+                        var isOut = asset.Status == AssetStatus.Assigned
+                            || asset.Status == AssetStatus.Overdue
+                            || asset.Status == AssetStatus.InTransit;
+                        // Model, serial and location ride along as a hover
+                        // hint, so the row stays one line as in the mockup.
+                        var hint = asset.ModelName
+                            + (string.IsNullOrWhiteSpace(asset.SerialNumber) ? "" : " · SN " + asset.SerialNumber)
+                            + (string.IsNullOrWhiteSpace(asset.CurrentLocationName) ? "" : " · " + asset.CurrentLocationName);
+                        <tr>
+                            <td class="rt-col" hidden>
+                                @if (asset.CanBeRedTagged)
+                                {
+                                    <input type="checkbox" class="form-check-input rt-box" form="redTagForm" name="assetIds" value="@asset.AssetID" aria-label="Red tag @asset.AssetCode" />
+                                }
+                                else
+                                {
+                                    <span class="text-muted" title="@(asset.Status == AssetStatus.RedTagged ? "Already red tagged" : "Out on a request or with someone")">—</span>
+                                }
+                            </td>
+                            <td><a asp-action="Details" asp-route-id="@asset.AssetID" class="asset-code-chip">@asset.AssetCode</a></td>
+                            <td>
+                                <a asp-action="Details" asp-route-id="@asset.AssetID" class="asset-name" title="@hint">@asset.AssetName</a>
+                            </td>
+                            <td class="asset-muted">@asset.CategoryName</td>
+                            <td><span class="asset-pill asset-cond cond-@asset.Condition.ToString().ToLowerInvariant()">@DisplayText.Humanize(asset.Condition.ToString())</span></td>
+                            <td><span class="asset-pill asset-status st-@asset.Status.ToString().ToLowerInvariant()">@StatusLabel(asset.Status)</span></td>
+                            <td>
+                                @if (!string.IsNullOrWhiteSpace(asset.AssignedUserName))
+                                {
+                                    <span class="asset-holder">
+                                        <span class="asset-holder-avatar">@Initials(asset.AssignedUserName)</span>
+                                        @asset.AssignedUserName
+                                    </span>
+                                }
+                                else if (asset.Status == AssetStatus.Assigned && !string.IsNullOrWhiteSpace(asset.DepartmentName))
+                                {
+                                    @* Assigned to a department, with no person. *@
+                                    <span class="asset-holder" title="Assigned to this department. Cannot be borrowed.">
+                                        <span class="asset-holder-avatar is-dept" aria-hidden="true">
+                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 21V8l9-5 9 5v13" /><path d="M9 21v-6h6v6" /></svg>
+                                        </span>
+                                        @asset.DepartmentName
+                                    </span>
+                                }
+                                else
+                                {
+                                    <span class="asset-none">Property stock</span>
+                                }
+                            </td>
+                            <td class="text-end">
+                                <div class="dropdown">
+                                    <button type="button" class="asset-row-menu" data-bs-toggle="dropdown" aria-expanded="false"
+                                            aria-label="Actions for @asset.AssetCode">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg>
+                                    </button>
+                                    <ul class="dropdown-menu dropdown-menu-end">
+                                        <li><a class="dropdown-item" asp-action="Details" asp-route-id="@asset.AssetID">View details</a></li>
+                                        @if (canViewHistory)
+                                        {
+                                            <li><a class="dropdown-item" asp-action="History" asp-route-id="@asset.AssetID">History</a></li>
+                                        }
+                                        @if (canManage && (!isOut || asset.IsWithDepartment))
+                                        {
+                                            <li><a class="dropdown-item" asp-action="Edit" asp-route-id="@asset.AssetID">Edit</a></li>
+                                        }
+                                        @if (canManage && asset.CanBeRedTagged)
+                                        {
+                                            <li><a class="dropdown-item text-danger" asp-action="RedTag" asp-route-id="@asset.AssetID">Red tag</a></li>
+                                        }
+                                        @if (canManage && asset.Status == AssetStatus.RedTagged)
+                                        {
+                                            <li><a class="dropdown-item text-danger" asp-action="Dispose" asp-route-id="@asset.AssetID">Dispose</a></li>
+                                        }
+                                        @if (!string.IsNullOrEmpty(asset.BarcodeData))
+                                        {
+                                            <li><a class="dropdown-item" asp-action="Barcode" asp-route-id="@asset.AssetID" target="_blank">Barcode</a></li>
+                                        }
+                                    </ul>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="asset-foot">
+            <select name="pageSize" form="assetFilters" class="form-select form-select-sm asset-page-size"
+                    aria-label="Rows per page" onchange="this.form.submit()">
+                @foreach (var size in Model.PageSizeOptions)
+                {
+                    <option value="@size" selected="@(size == Model.PageSize)">@size per page</option>
+                }
+            </select>
+
+            <div class="asset-pager">
+                <span class="asset-page-label">Page @Model.Page of @lastPage</span>
+                <nav aria-label="Asset pages" class="d-flex" style="gap:6px;">
+                    @if (Model.Page > 1)
+                    {
+                        <a class="asset-page" asp-action="Index" asp-all-route-data="pageRoute(Model.Page - 1)" aria-label="Previous page">&lsaquo;</a>
+                    }
+                    else
+                    {
+                        <span class="asset-page disabled" aria-hidden="true">&lsaquo;</span>
+                    }
+
+                    @if (windowStart > 1)
+                    {
+                        <a class="asset-page" asp-action="Index" asp-all-route-data="pageRoute(1)">1</a>
+                        if (windowStart > 2)
+                        {
+                            <span class="asset-page-gap">…</span>
+                        }
+                    }
+
+                    @for (var n = windowStart; n <= windowEnd; n++)
+                    {
+                        if (n == Model.Page)
+                        {
+                            <span class="asset-page current" aria-current="page">@n</span>
+                        }
+                        else
+                        {
+                            <a class="asset-page" asp-action="Index" asp-all-route-data="pageRoute(n)">@n</a>
+                        }
+                    }
+
+                    @if (windowEnd < lastPage)
+                    {
+                        if (windowEnd < lastPage - 1)
+                        {
+                            <span class="asset-page-gap">…</span>
+                        }
+                        <a class="asset-page" asp-action="Index" asp-all-route-data="pageRoute(lastPage)">@lastPage</a>
+                    }
+
+                    @if (Model.Page < lastPage)
+                    {
+                        <a class="asset-page" asp-action="Index" asp-all-route-data="pageRoute(Model.Page + 1)" aria-label="Next page">&rsaquo;</a>
+                    }
+                    else
+                    {
+                        <span class="asset-page disabled" aria-hidden="true">&rsaquo;</span>
+                    }
+                </nav>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="sab-empty">
+            <div class="sab-empty-title">No assets match these filters</div>
+            <p>Every record here is one physical unit. Clear the filters to see the whole inventory.</p>
+            <a asp-action="Index" class="btn btn-outline-secondary">Reset filters</a>
+        </div>
+    }
+</div>
+
+@if (canManage)
+{
+    @* The red tag bar: shown in red tag mode. *@
+    <form id="redTagForm" asp-action="RedTagMany" method="post" class="register-footer rt-bar" hidden>
+        @Html.AntiForgeryToken()
+        <strong class="text-danger text-nowrap"><span id="rtCount">0</span> ticked<small class="fw-normal text-muted" id="rtElsewhere"></small></strong>
+        <span class="rt-tools">
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="rtTickPage">Tick all on this page</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="rtUntickAll">Untick all</button>
+        </span>
+        <input type="text" name="reason" class="form-control" maxlength="500" required placeholder="Why they are red tagged (broken beyond repair, obsolete...)" aria-label="Reason for red tagging" />
+        <button type="button" class="btn btn-outline-secondary" id="rtCancel">Cancel</button>
+        <button type="submit" class="btn btn-danger" id="rtGo" disabled
+                onclick="return confirm('Red tag the ticked units for disposal? They leave the stock that can be borrowed.');">Red tag ticked</button>
+    </form>
+}
+
+@section Scripts {
+    <script>
+        // Red tag mode (Property): tick box column and the bar at the bottom.
+        // Clicking anywhere on a row ticks it (no opening the item while in
+        // the mode). The mode, the ticks and the reason are kept while moving
+        // between pages and filters (this tab's sessionStorage) until they
+        // are red tagged, cancelled or unticked.
+        (function () {
+            var toggle = document.getElementById('redTagMode');
+            var bar = document.getElementById('redTagForm');
+            if (!toggle || !bar) return;
+            var KEY = 'sab-redtag';
+            var boxes = Array.from(document.querySelectorAll('.rt-box'));
+            var all = document.getElementById('rtAll');
+            var reason = bar.querySelector('input[name=reason]');
+            var col = document.querySelector('.rt-col');
+            var table = col ? col.closest('table') : null;
+            var state = { on: false, ids: [], reason: '' };
+            try { state = Object.assign(state, JSON.parse(sessionStorage.getItem(KEY) || '{}')); } catch (e) { }
+            var ticked = new Set((state.ids || []).map(String));
+            function save() {
+                try {
+                    if (!state.on) sessionStorage.removeItem(KEY);
+                    else sessionStorage.setItem(KEY, JSON.stringify({ on: true, ids: Array.from(ticked), reason: reason.value }));
+                } catch (e) { }
+            }
+            function count() {
+                boxes.forEach(function (b) { b.closest('tr').classList.toggle('rt-ticked', b.checked); });
+                var here = boxes.filter(function (b) { return b.checked; }).length;
+                var elsewhere = Array.from(ticked).filter(function (id) { return !boxes.some(function (b) { return b.value === id; }); }).length;
+                document.getElementById('rtCount').textContent = ticked.size;
+                document.getElementById('rtElsewhere').textContent = elsewhere ? ' (' + elsewhere + ' on other pages)' : '';
+                document.getElementById('rtGo').disabled = ticked.size === 0;
+                if (all) all.checked = boxes.length > 0 && here === boxes.length;
+                save();
+            }
+            function setMode(on) {
+                state.on = on;
+                toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+                toggle.classList.toggle('btn-danger', on);
+                toggle.classList.toggle('btn-outline-danger', !on);
+                document.querySelectorAll('.rt-col').forEach(function (c) { c.hidden = !on; });
+                if (table) table.classList.toggle('rt-on', on);
+                bar.hidden = !on;
+                if (!on) { ticked.clear(); boxes.forEach(function (b) { b.checked = false; }); reason.value = ''; }
+                count();
+            }
+            function setBox(b, on) { b.checked = on; if (on) ticked.add(b.value); else ticked.delete(b.value); }
+            toggle.addEventListener('click', function () { setMode(!state.on); });
+            document.getElementById('rtCancel').addEventListener('click', function () { setMode(false); });
+            document.getElementById('rtTickPage').addEventListener('click', function () { boxes.forEach(function (b) { setBox(b, true); }); count(); });
+            document.getElementById('rtUntickAll').addEventListener('click', function () { ticked.clear(); boxes.forEach(function (b) { b.checked = false; }); count(); });
+            boxes.forEach(function (b) { b.addEventListener('change', function () { setBox(b, b.checked); count(); }); });
+            if (all) all.addEventListener('change', function () { boxes.forEach(function (b) { setBox(b, all.checked); }); count(); });
+            reason.addEventListener('input', save);
+            // A row click ticks the row instead of opening the item.
+            if (table) table.addEventListener('click', function (e) {
+                if (!state.on) return;
+                var tr = e.target.closest('tbody tr');
+                if (!tr || !table.contains(tr)) return;
+                var box = tr.querySelector('.rt-box');
+                if (e.target === box) return;
+                e.preventDefault(); e.stopPropagation();
+                if (box) { setBox(box, !box.checked); count(); }
+            }, true);
+            // Ticks from other pages go with the form; then the mode ends.
+            bar.addEventListener('submit', function () {
+                Array.from(ticked).forEach(function (id) {
+                    if (boxes.some(function (b) { return b.value === id && b.checked; })) return;
+                    var h = document.createElement('input');
+                    h.type = 'hidden'; h.name = 'assetIds'; h.value = id;
+                    bar.appendChild(h);
+                });
+                try { sessionStorage.removeItem(KEY); } catch (e) { }
+            });
+            // Back in the mode where it was left.
+            boxes.forEach(function (b) { b.checked = ticked.has(b.value); });
+            if (state.reason) reason.value = state.reason;
+            setMode(!!state.on);
+        })();
+    </script>
+    <script>
+        // Cascading filters. Every list can be used on its own, and the
+        // pairs keep each other consistent:
+        //   Category -> narrows Model.   Model -> selects its Category.
+        //   Branch -> narrows Location and Department.
+        //   Location or Department -> selects its Branch, which then
+        //   narrows the other one.
+        //   Department (or, with none, Branch) -> narrows User.
+        // With no parent chosen, a child list shows everything grouped
+        // under its parent's name. This only shapes the lists -- the server
+        // applies whatever is submitted.
+        (function () {
+            var categorySel = document.getElementById('fCategory');
+            var modelSel = document.getElementById('fModel');
+            var branchSel = document.getElementById('fBranch');
+            var locationSel = document.getElementById('fLocation');
+            var departmentSel = document.getElementById('fDepartment');
+            var userSel = document.getElementById('fUser');
+            if (!categorySel || !modelSel || !branchSel || !locationSel || !departmentSel || !userSel) return;
+
+            // Snapshot every child option once, with its parent id and group,
+            // so a list can be rebuilt from scratch whenever its parent changes.
+            function snapshot(select) {
+                return Array.from(select.querySelectorAll('option[data-parent]')).map(function (o) {
+                    return {
+                        value: o.value,
+                        text: o.textContent,
+                        parent: o.getAttribute('data-parent'),
+                        branch: o.getAttribute('data-branch'),
+                        group: o.parentElement.tagName === 'OPTGROUP' ? o.parentElement.label : null
+                    };
+                });
+            }
+
+            var allModels = snapshot(modelSel);
+            var allLocations = snapshot(locationSel);
+            var allDepartments = snapshot(departmentSel);
+            var allUsers = snapshot(userSel);
+
+            // Rebuild a child list with only the options under parentValue.
+            // With no parent chosen, everything is listed under group headers;
+            // with one chosen, the headers would all say the same thing, so
+            // the list goes flat. Keeps the current choice if it survives,
+            // otherwise falls back to the first ("All ...") entry.
+            //
+            // keep, when given, decides instead of parentValue which options
+            // stay (Users narrowed by branch), and the headers are kept.
+            function rebuild(select, options, parentValue, keep) {
+                var current = select.value;
+                var placeholder = select.options[0];
+                select.innerHTML = '';
+                select.appendChild(placeholder);
+
+                var groups = {};
+                options.forEach(function (o) {
+                    if (keep ? !keep(o) : (parentValue && o.parent !== parentValue)) return;
+
+                    var container = select;
+                    if (!parentValue && o.group) {
+                        if (!groups[o.group]) {
+                            groups[o.group] = document.createElement('optgroup');
+                            groups[o.group].label = o.group;
+                            select.appendChild(groups[o.group]);
+                        }
+                        container = groups[o.group];
+                    }
+
+                    var opt = document.createElement('option');
+                    opt.value = o.value;
+                    opt.textContent = o.text;
+                    opt.setAttribute('data-parent', o.parent);
+                    if (o.branch) opt.setAttribute('data-branch', o.branch);
+                    container.appendChild(opt);
+                });
+
+                select.value = current;
+                if (select.value !== current) select.value = '';
+            }
+
+            function parentOf(options, value) {
+                for (var i = 0; i < options.length; i++) {
+                    if (options[i].value === value) return options[i].parent;
+                }
+                return '';
+            }
+
+            function syncModels() {
+                rebuild(modelSel, allModels, categorySel.value);
+            }
+
+            // Users: the chosen department's people; with no department,
+            // the chosen branch's; with neither, everyone.
+            function syncUsers() {
+                if (departmentSel.value) {
+                    rebuild(userSel, allUsers, departmentSel.value);
+                } else if (branchSel.value) {
+                    var branch = branchSel.value;
+                    rebuild(userSel, allUsers, '', function (o) { return o.branch === branch; });
+                } else {
+                    rebuild(userSel, allUsers, '');
+                }
+            }
+
+            function syncBranchChildren() {
+                rebuild(locationSel, allLocations, branchSel.value);
+                rebuild(departmentSel, allDepartments, branchSel.value);
+                syncUsers();
+            }
+
+            // Picking a child selects its parent, then re-narrows the
+            // parent's other children to match.
+            function adoptParent(childSel, childOptions, parentSel, resync) {
+                if (!childSel.value) return;
+                var parent = parentOf(childOptions, childSel.value);
+                if (parent && parentSel.value !== parent) {
+                    parentSel.value = parent;
+                    resync();
+                }
+            }
+
+            categorySel.addEventListener('change', syncModels);
+            branchSel.addEventListener('change', syncBranchChildren);
+
+            modelSel.addEventListener('change', function () {
+                adoptParent(modelSel, allModels, categorySel, syncModels);
+            });
+            locationSel.addEventListener('change', function () {
+                adoptParent(locationSel, allLocations, branchSel, syncBranchChildren);
+            });
+            departmentSel.addEventListener('change', function () {
+                adoptParent(departmentSel, allDepartments, branchSel, syncBranchChildren);
+                syncUsers();
+            });
+
+            // On load: let any chosen child settle its parent first (a
+            // bookmarked URL may carry a child without its parent), then
+            // narrow everything to match.
+            adoptParent(modelSel, allModels, categorySel, function () {});
+            adoptParent(locationSel, allLocations, branchSel, function () {});
+            adoptParent(departmentSel, allDepartments, branchSel, function () {});
+            syncModels();
+            syncBranchChildren();
+        })();
+
+        // "/" jumps to the search box, as the hint in it says.
+        document.addEventListener('keydown', function (e) {
+            if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+            var t = e.target;
+            if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+            var box = document.getElementById('assetKeyword');
+            if (!box) return;
+            e.preventDefault();
+            box.focus();
+            box.select();
+        });
+
+        // The scan box is ready to receive a scanner's keystrokes as soon as
+        // it opens.
+        (function () {
+            var toggle = document.getElementById('scanToggle');
+            if (!toggle) return;
+            toggle.addEventListener('shown.bs.dropdown', function () {
+                document.getElementById('scanCode').focus();
+            });
+        })();
+
+        // Row menus sit inside the scrolling table wrapper, which would clip
+        // them; a fixed-position popper escapes it.
+        document.querySelectorAll('.asset-row-menu').forEach(function (btn) {
+            new bootstrap.Dropdown(btn, {
+                popperConfig: function (config) {
+                    return Object.assign({}, config, { strategy: 'fixed' });
+                }
+            });
+        });
+    </script>
+}

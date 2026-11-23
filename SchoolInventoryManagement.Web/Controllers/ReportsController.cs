@@ -1,0 +1,446 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Security.Claims;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+using System.Net;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Mvc.Rendering;
+using SchoolInventoryManagement.BLL.Interfaces;
+using SchoolInventoryManagement.DAL.Constants;
+using SchoolInventoryManagement.DAL.Entities.Enums;
+using SchoolInventoryManagement.Web.Helpers;
+
+namespace SchoolInventoryManagement.Web.Controllers
+{
+    // Reports are read-only, so there is nothing here to guard with
+    // RowVersion and nothing that can throw ConcurrencyConflictException.
+    // Filters arrive as plain action parameters rather than view models,
+    // matching AssetsController.Index — they are all optional and none of
+    // them are posted back.
+    [Authorize(Roles = RoleNames.AssetOfficer + "," + RoleNames.Administrator + "," + RoleNames.Principal)]
+    public class ReportsController : BaseController
+    {
+        private readonly IReportService _reportService;
+        private readonly IDepartmentService _departmentService;
+        private readonly IBranchService _branchService;
+        private readonly IUserService _userService;
+
+        public ReportsController(
+            IReportService reportService,
+            IDepartmentService departmentService,
+            IBranchService branchService,
+            IUserService userService)
+        {
+            _reportService = reportService;
+            _departmentService = departmentService;
+            _branchService = branchService;
+            _userService = userService;
+        }
+
+        private int CurrentUserId =>
+            int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+        // Every report page and every export is written to the audit trail
+        // with its filters, so who looked at or downloaded which data can be
+        // checked on Reports > Audit. Done here once rather than in each
+        // action, so a report added later is covered too. Only recorded
+        // when the action succeeded.
+        public override async Task OnActionExecutionAsync(
+            ActionExecutingContext context, ActionExecutionDelegate next)
+        {
+            var executed = await next();
+            if (executed.Exception is not null && !executed.ExceptionHandled)
+                return;
+
+            var actionName = context.RouteData.Values["action"]?.ToString() ?? "";
+            var isExport = actionName.StartsWith("Export", StringComparison.Ordinal);
+            var report = isExport ? actionName["Export".Length..] : actionName;
+            if (report == "Index")
+                report = "Dashboard";
+
+            var filters = Request.QueryString.HasValue
+                ? " " + WebUtility.UrlDecode(Request.QueryString.Value)
+                : "";
+
+            await RecordAccessAsync(
+                isExport ? "Data Exported" : "Report Viewed",
+                $"{report} report{filters}");
+        }
+
+        // ==================================================================
+        // Dashboard
+        // ==================================================================
+
+        // GET /Reports
+        public async Task<IActionResult> Index()
+        {
+            var summary = await _reportService.GetInventorySummaryAsync(CurrentUserId);
+            return View(summary);
+        }
+
+        // GET /Reports/ExportSummary
+        // The summary page as one sheet: a Section column, then each figure.
+        // Values are plain 0.00 so a spreadsheet can add them up.
+        public async Task<IActionResult> ExportSummary()
+        {
+            var s = await _reportService.GetInventorySummaryAsync(CurrentUserId);
+
+            static string Money(decimal value) => value.ToString("0.00", CultureInfo.InvariantCulture);
+            static string Num(int value) => value.ToString(CultureInfo.InvariantCulture);
+
+            var rows = new List<string?[]>
+            {
+                new[] { "Totals", "Assets on record", Num(s.TotalAssets), null },
+                new[] { "Totals", "Assets in service", Num(s.InServiceAssets), Money(s.TotalValue) },
+                new[] { "Totals", "Available", Num(s.AvailableCount), null },
+                new[] { "Totals", "Assigned out", Num(s.AssignedCount), null },
+                new[] { "Totals", "Ready for pickup / on its way", Num(s.AwaitingHandoverCount), null },
+                new[] { "Totals", "Under maintenance", Num(s.UnderMaintenanceCount), null },
+                new[] { "Totals", "Damaged condition", Num(s.DamagedCount), null },
+                new[] { "Totals", "Disposed", Num(s.DisposedCount), null },
+                new[] { "Totals", "Pending requests", Num(s.PendingRequestCount), null },
+                new[] { "Totals", "Active users", Num(s.ActiveUserCount), null }
+            };
+
+            void AddSection(string section, List<SchoolInventoryManagement.BLL.DTOs.CountByLabelDTO> items, bool humanize = false)
+            {
+                foreach (var item in items)
+                    rows.Add(new[]
+                    {
+                        section,
+                        humanize ? DisplayText.Humanize(item.Label) : item.Label,
+                        Num(item.Count),
+                        Money(item.TotalValue)
+                    });
+            }
+
+            AddSection("By status", s.ByStatus, humanize: true);
+            AddSection("By condition", s.ByCondition, humanize: true);
+            AddSection("By category", s.ByCategory);
+            AddSection("By branch", s.ByBranch);
+            AddSection("By department", s.ByDepartment);
+
+            var csv = CsvExportHelper.Build(
+                new[] { "Section", "Item", "Count", "Value (PHP)" },
+                rows);
+
+            return File(csv, "text/csv", CsvExportHelper.TimestampedFileName("inventory-summary"));
+        }
+
+        // ==================================================================
+        // Outstanding assignments
+        // ==================================================================
+
+        // GET /Reports/Assignments
+        public async Task<IActionResult> Assignments(int? departmentId, int? branchId)
+        {
+            await PopulateScopeDropdownsAsync(departmentId, branchId);
+
+            var rows = await _reportService.GetOutstandingAssignmentsAsync(
+                departmentId, branchId, CurrentUserId);
+
+            return View(rows);
+        }
+
+        // GET /Reports/ExportAssignments
+        public async Task<IActionResult> ExportAssignments(int? departmentId, int? branchId)
+        {
+            var rows = await _reportService.GetOutstandingAssignmentsAsync(
+                departmentId, branchId, CurrentUserId);
+
+            var csv = CsvExportHelper.Build(
+                new[]
+                {
+                    "Asset Code", "Asset Name", "Assigned To", "Username", "Role",
+                    "Department", "Assigned By", "Assignment Date", "Days Out",
+                    "Condition Out", "Remarks"
+                },
+                rows.Select(r => new string?[]
+                {
+                    r.AssetCode,
+                    r.AssetName,
+                    r.AssignedToName,
+                    r.AssignedToUsername,
+                    r.AssignedToRole,
+                    r.DepartmentName,
+                    r.AssignedByName,
+                    r.AssignmentDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    r.DaysOut.ToString(CultureInfo.InvariantCulture),
+                    r.ConditionOnAssignment.ToString(),
+                    r.Remarks
+                }));
+
+            return File(csv, "text/csv", CsvExportHelper.TimestampedFileName("outstanding-assignments"));
+        }
+
+        // ==================================================================
+        // Disposals
+        // ==================================================================
+
+        // GET /Reports/Disposals
+        public async Task<IActionResult> Disposals(DateTime? fromDate, DateTime? toDate, bool includeRestored = false)
+        {
+            ViewBag.FromDate = fromDate;
+            ViewBag.ToDate = toDate;
+            ViewBag.IncludeRestored = includeRestored;
+
+            var rows = await _reportService.GetDisposalsAsync(
+                fromDate, toDate, includeRestored, CurrentUserId);
+
+            return View(rows);
+        }
+
+        // GET /Reports/ExportDisposals
+        public async Task<IActionResult> ExportDisposals(DateTime? fromDate, DateTime? toDate, bool includeRestored = false)
+        {
+            var rows = await _reportService.GetDisposalsAsync(
+                fromDate, toDate, includeRestored, CurrentUserId);
+
+            var csv = CsvExportHelper.Build(
+                new[]
+                {
+                    "Asset Code", "Asset Name", "Category", "Disposal Date",
+                    "Reason", "Method", "Approved By", "Acquisition Cost (PHP)",
+                    "Restored", "Restored Date", "Restored By"
+                },
+                rows.Select(r => new string?[]
+                {
+                    r.AssetCode,
+                    r.AssetName,
+                    r.CategoryName,
+                    r.DisposalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    r.ReasonForDisposal,
+                    r.DisposalMethod,
+                    r.ApprovedByName,
+                    r.AcquisitionCost?.ToString("0.00", CultureInfo.InvariantCulture),
+                    r.IsRestored ? "Yes" : "No",
+                    r.RestoredDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    r.RestoredByName
+                }));
+
+            return File(csv, "text/csv", CsvExportHelper.TimestampedFileName("disposals"));
+        }
+
+        // ==================================================================
+        // Supplies
+        // ==================================================================
+
+        // GET /Reports/Supplies
+        public async Task<IActionResult> Supplies(
+            [FromServices] ISupplyService supplies, DateTime? fromDate, DateTime? toDate, int? branchId, int? departmentId)
+        {
+            // Default: this month so far.
+            fromDate ??= new DateTime(PhilippineTime.Today.Year, PhilippineTime.Today.Month, 1);
+            toDate ??= PhilippineTime.Today;
+
+            ViewBag.FromDate = fromDate;
+            ViewBag.ToDate = toDate;
+            ViewBag.BranchId = branchId;
+            ViewBag.DepartmentId = departmentId;
+            ViewBag.Branches = await _branchService.GetAllBranchesAsync();
+            ViewBag.Departments = await _departmentService.GetAllDepartmentsAsync();
+
+            return View(await supplies.GetReportAsync(fromDate, toDate, branchId, departmentId));
+        }
+
+        // GET /Reports/ExportSupplies[?section=departments|people|demand]
+        // Without a section: the stock table (In, out and what is left).
+        public async Task<IActionResult> ExportSupplies(
+            [FromServices] ISupplyService supplies, DateTime? fromDate, DateTime? toDate, int? branchId, int? departmentId, string? section)
+        {
+            fromDate ??= new DateTime(PhilippineTime.Today.Year, PhilippineTime.Today.Month, 1);
+            toDate ??= PhilippineTime.Today;
+            var report = await supplies.GetReportAsync(fromDate, toDate, branchId, departmentId);
+            static string N(int n) => n.ToString(CultureInfo.InvariantCulture);
+            static string P(decimal v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+
+            switch (section)
+            {
+                case "departments":
+                    return File(CsvExportHelper.Build(
+                        new[] { "Department", "Requests", "Units", "Value" },
+                        report.ByDepartment.Select(d => new string?[] { d.DepartmentName, N(d.Requests), N(d.Units), P(d.Value) })),
+                        "text/csv", CsvExportHelper.TimestampedFileName("supplies-by-department"));
+
+                case "people":
+                    return File(CsvExportHelper.Build(
+                        new[] { "Person", "Department", "Requests", "Units", "Value" },
+                        report.ByPerson.Select(p => new string?[] { p.PersonName, p.DepartmentName, N(p.Requests), N(p.Units), P(p.Value) })),
+                        "text/csv", CsvExportHelper.TimestampedFileName("supplies-by-person"));
+
+                case "demand":
+                    return File(CsvExportHelper.Build(
+                        new[] { "Department", "Requests", "Asked", "Handed Out", "Lowered", "Rejected", "Cancelled", "Still Open", "Filled %" },
+                        report.DemandByDepartment.Append(report.DemandTotal).Select(d => new string?[]
+                        {
+                            d.DepartmentName, N(d.Requests), N(d.Asked), N(d.HandedOut), N(d.Lowered),
+                            N(d.Rejected), N(d.Cancelled), N(d.StillOpen), d.FilledPercent is int f ? N(f) : ""
+                        })),
+                        "text/csv", CsvExportHelper.TimestampedFileName("supplies-requested-vs-handed-out"));
+            }
+
+            var csv = CsvExportHelper.Build(
+                new[] { "Supply", "Unit", "Received", "Issued", "Adjusted", "In Stock Now", "Status" },
+                report.ByItem.Select(i => new string?[]
+                {
+                    i.SupplyName,
+                    i.Unit,
+                    i.Received.ToString(CultureInfo.InvariantCulture),
+                    i.Issued.ToString(CultureInfo.InvariantCulture),
+                    i.Adjusted.ToString(CultureInfo.InvariantCulture),
+                    i.InStock.ToString(CultureInfo.InvariantCulture),
+                    i.Status.ToString()
+                }));
+
+            return File(csv, "text/csv", CsvExportHelper.TimestampedFileName("supplies"));
+        }
+
+        // ==================================================================
+        // Request activity
+        // ==================================================================
+
+        // GET /Reports/Requests
+        public async Task<IActionResult> Requests(
+            DateTime? fromDate, DateTime? toDate, RequestStatus? status, RequestType? type)
+        {
+            ViewBag.FromDate = fromDate;
+            ViewBag.ToDate = toDate;
+            ViewBag.Status = status;
+            ViewBag.Type = type;
+
+            var report = await _reportService.GetRequestActivityAsync(
+                fromDate, toDate, status, type, CurrentUserId);
+
+            return View(report);
+        }
+
+        // GET /Reports/ExportRequests
+        public async Task<IActionResult> ExportRequests(
+            DateTime? fromDate, DateTime? toDate, RequestStatus? status, RequestType? type)
+        {
+            var report = await _reportService.GetRequestActivityAsync(
+                fromDate, toDate, status, type, CurrentUserId);
+
+            var csv = CsvExportHelper.Build(
+                new[]
+                {
+                    "Request #", "Type", "Status", "Requester", "Requester Role",
+                    "Department", "Item", "Reason", "Submitted", "Decided",
+                    "Decided By", "Turnaround (days)", "Remarks"
+                },
+                report.Rows.Select(r => new string?[]
+                {
+                    r.RequestID.ToString(CultureInfo.InvariantCulture),
+                    r.RequestType.ToString(),
+                    r.RequestStatus.ToString(),
+                    r.RequesterName,
+                    r.RequesterRole,
+                    r.DepartmentName,
+                    r.ItemDescription,
+                    r.Reason,
+                    r.RequestDate.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
+                    r.ApprovalDate?.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
+                    r.DecidedByName,
+                    r.TurnaroundDays?.ToString("0.0", CultureInfo.InvariantCulture),
+                    r.Remarks
+                }));
+
+            return File(csv, "text/csv", CsvExportHelper.TimestampedFileName("request-activity"));
+        }
+
+        // ==================================================================
+        // Audit trail
+        // ==================================================================
+
+        // GET /Reports/Audit
+        public async Task<IActionResult> Audit(
+            DateTime? fromDate, DateTime? toDate, int? userId, string? actionContains, int maxRows = 500)
+        {
+            ViewBag.FromDate = fromDate;
+            ViewBag.ToDate = toDate;
+            ViewBag.Action = actionContains;
+            ViewBag.MaxRows = maxRows;
+
+            await PopulateUserDropdownAsync(userId);
+
+            var rows = await _reportService.GetAuditTrailAsync(
+                fromDate, toDate, userId, actionContains, maxRows, CurrentUserId);
+
+            // The service caps the row count; tell the reader when the cap
+            // actually bit, so a truncated report is never mistaken for a
+            // complete one.
+            ViewBag.WasTruncated = rows.Count >= (maxRows > 0 && maxRows <= 2000 ? maxRows : 500);
+
+            return View(rows);
+        }
+
+        // GET /Reports/ExportAudit
+        public async Task<IActionResult> ExportAudit(
+            DateTime? fromDate, DateTime? toDate, int? userId, string? actionContains, int maxRows = 2000)
+        {
+            var rows = await _reportService.GetAuditTrailAsync(
+                fromDate, toDate, userId, actionContains, maxRows, CurrentUserId);
+
+            var csv = CsvExportHelper.Build(
+                new[]
+                {
+                    "Timestamp", "User", "Role", "Action", "Asset Code",
+                    "Details", "IP Address"
+                },
+                rows.Select(r => new string?[]
+                {
+                    r.LogDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+                    r.UserName,
+                    r.UserRole,
+                    r.ActionPerformed,
+                    r.TargetAssetCode,
+                    r.Description,
+                    r.IPAddress
+                }));
+
+            return File(csv, "text/csv", CsvExportHelper.TimestampedFileName("audit-trail"));
+        }
+
+        // ==================================================================
+        // Dropdowns
+        // ==================================================================
+
+        private async Task PopulateScopeDropdownsAsync(int? selectedDepartmentId, int? selectedBranchId)
+        {
+            var branches = await _branchService.GetAllBranchesAsync();
+            ViewBag.Branches = new SelectList(branches, "BranchID", "BranchName", selectedBranchId);
+
+            // Department names repeat across branches, so label with both.
+            var departments = await _departmentService.GetAllDepartmentsAsync();
+            ViewBag.Departments = new SelectList(
+                departments.Select(d => new
+                {
+                    d.DepartmentID,
+                    Label = $"{d.BranchName} - {d.DepartmentName}"
+                }),
+                "DepartmentID", "Label", selectedDepartmentId);
+        }
+
+        private async Task PopulateUserDropdownAsync(int? selectedUserId)
+        {
+            // Inactive users stay listed here on purpose: their past actions
+            // are still in the audit trail and still worth filtering to.
+            var users = await _userService.GetAllUsersAsync();
+
+            ViewBag.Users = new SelectList(
+                users
+                    .OrderBy(u => u.FirstName)
+                    .ThenBy(u => u.LastName)
+                    .Select(u => new
+                    {
+                        u.UserID,
+                        Label = $"{u.FirstName} {u.LastName} ({u.RoleName})"
+                    }),
+                "UserID", "Label", selectedUserId);
+        }
+    }
+}

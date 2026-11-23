@@ -1,0 +1,63 @@
+﻿@model SchoolInventoryManagement.BLL.DTOs.NewItemRequestResponseDTO
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@using SchoolInventoryManagement.Web.Helpers
+@* What a requisition asks for: one row per item with its quantity, how
+   much comes from Property's stock and how much is bought (Scripts/031),
+   and the requester's description. No prices. Used by the requisition
+   lists, the queue and the requisition page. On a phone each row becomes a
+   small card. *@
+@{
+    var units = Model.Items.Sum(i => i.Quantity);
+    var supplies = Model.ItemKind == CategoryKind.Supply;
+}
+<div class="ni-ticket">
+    <table class="ni-ticket-table">
+        <thead>
+            <tr><th>Item</th><th class="num">Qty</th><th>From stock / to buy</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var item in Model.Items)
+            {
+                @* data-pager-item: a page that wraps this in [data-pager] (the
+                   request page) shows 10 rows at a time. *@
+                <tr data-pager-item>
+                    <td class="ni-ticket-name">
+                        @if (!string.IsNullOrEmpty(item.PhotoUrl))
+                        {
+                            @* The requester's photo of it (Scripts/037). *@
+                            <a href="@item.PhotoUrl" target="_blank" rel="noopener" class="ni-ticket-photo" title="Photo of @item.ItemName"><img src="@item.PhotoUrl" alt="Photo of @item.ItemName" loading="lazy" /></a>
+                        }
+                        @item.ItemName
+                        <small class="ni-ticket-kind">@(item.IsExisting ? (supplies ? "More of a supply the school has" : "More of a model the school has") : "New to the school")</small>
+                    </td>
+                    <td class="num ni-ticket-qty" data-label="Qty">&times;@item.Quantity@(supplies && !string.IsNullOrWhiteSpace(item.Unit) ? " " + SupplyText.Unit(item.Quantity, item.Unit) : "")</td>
+                    <td class="ni-ticket-desc" data-label="Stock">
+                        @if (item.ToBuy == 0)
+                        {
+                            <span>All from stock</span>
+                        }
+                        else if (item.FromStock == 0)
+                        {
+                            <span>All to buy</span>
+                        }
+                        else
+                        {
+                            <span>@item.FromStock from stock · @item.ToBuy to buy</span>
+                        }
+                        @if (item.ToBuy > 0 && item.Ordered > 0)
+                        {
+                            <small class="d-block text-muted">@item.Ordered of @item.ToBuy ordered</small>
+                        }
+                    </td>
+                    <td class="ni-ticket-desc">@DisplayText.Or(item.Description, "No description")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <div class="ni-ticket-total">
+        <span>
+            <strong>@(supplies ? "Consumables" : "Fixed assets")</strong>
+            <small>@Model.Items.Count item@(Model.Items.Count == 1 ? "" : "s") &middot; @units unit@(units == 1 ? "" : "s")</small>
+        </span>
+    </div>
+</div>

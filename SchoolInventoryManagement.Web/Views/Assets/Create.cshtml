@@ -1,0 +1,291 @@
+﻿@model SchoolInventoryManagement.Web.ViewModels.AssetCreateViewModel
+@using SchoolInventoryManagement.Web.Helpers
+@using SchoolInventoryManagement.Web.ViewModels
+@{
+    ViewData["Title"] = "New Asset";
+    var modelChoices = (List<SchoolInventoryManagement.Web.ViewModels.ModelCodeOption>)ViewBag.ModelChoices;
+    // Where it goes (no Branch or Location on the form).
+    var place = ViewBag.Place as AssetPlace;
+    ViewData["SelectedModelId"] = Model.ModelID;
+}
+
+<div class="asset-detail-head">
+    <div>
+        <nav class="asset-crumbs" aria-label="Breadcrumb">
+            <a asp-action="Index">Assets</a>
+            <span aria-hidden="true">&rsaquo;</span>
+            <span>New asset</span>
+        </nav>
+        <h2 class="asset-detail-title">New asset</h2>
+        <div class="asset-detail-sub">Register one unit. Its code is given automatically from the model's category when you save.</div>
+    </div>
+    <div class="asset-detail-actions">
+        <a asp-action="BulkCreate" class="btn btn-outline-secondary">+ Bulk register instead</a>
+    </div>
+</div>
+
+<form asp-action="Create" method="post" enctype="multipart/form-data" class="register-form">
+    @Html.AntiForgeryToken()
+    @Html.FormTicket()
+    <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
+
+    <div class="row g-3">
+        <div class="col-lg-8">
+
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head">
+                    <span class="register-step-num">1</span>
+                    <div>
+                        <div class="register-step-title">What it is</div>
+                        <div class="register-step-sub">Pick the model first — the name fills in for you.</div>
+                    </div>
+                </div>
+                <div class="register-step-body">
+                    <div class="mb-3">
+                        <partial name="_ModelPicker" model="modelChoices" view-data="ViewData" />
+                    </div>
+
+                    <div class="mb-3">
+                        <label asp-for="AssetName" class="form-label">Asset name</label>
+                        <input asp-for="AssetName" id="assetName" class="form-control" />
+                        <span asp-validation-for="AssetName" class="text-danger"></span>
+                    </div>
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-5">
+                            <label asp-for="SerialNumber" class="form-label">Serial number <span class="register-optional">(optional)</span></label>
+                            <input asp-for="SerialNumber" class="form-control" placeholder="e.g. AS16-2026-0413" />
+                        </div>
+                        <div class="col-md-7">
+                            <div class="form-label">Condition</div>
+                            <partial name="_ConditionChips" model="Model.Condition" />
+                        </div>
+                    </div>
+
+                    <div>
+                        <label asp-for="Description" class="form-label">Description <span class="register-optional">(optional)</span></label>
+                        <textarea asp-for="Description" class="form-control" rows="3"
+                                  placeholder="Anything that helps tell this unit apart — colour, accessories, marks."></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head">
+                    <span class="register-step-num">2</span>
+                    <div>
+                        <div class="register-step-title">Purchase &amp; warranty</div>
+                        <div class="register-step-sub">Used for the value-in-service total and warranty reminders.</div>
+                    </div>
+                </div>
+                <div class="register-step-body">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label asp-for="AcquisitionDate" class="form-label">Acquired on <span class="register-optional">(optional)</span></label>
+                            <input asp-for="AcquisitionDate" type="date" class="form-control" />
+                        </div>
+                        <div class="col-md-6">
+                            <label asp-for="AcquisitionCost" class="form-label">Cost <span class="register-optional">(optional)</span></label>
+                            <div class="input-group">
+                                <span class="input-group-text">₱</span>
+                                <input asp-for="AcquisitionCost" type="number" step="0.01" min="0" placeholder="0.00" class="form-control" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label asp-for="WarrantyInformation" class="form-label">Warranty until <span class="register-optional">(optional)</span></label>
+                        <input asp-for="WarrantyInformation" type="date" class="form-control" />
+                    </div>
+
+                    <div>
+                        <div class="form-label">Warranty photo or file <span class="register-optional">(optional)</span></div>
+                        <label class="file-drop file-drop-row">
+                            <span class="file-drop-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6v18h12V7z" /><path d="M14 3v4h4" /></svg>
+                            </span>
+                            <span class="flex-grow-1">
+                                <span class="file-drop-title" data-empty="Drop the warranty card or receipt here">Drop the warranty card or receipt here</span>
+                                <span class="file-drop-sub">JPG, PNG, WebP or PDF · up to @FileUploads.MaxMegabytes MB</span>
+                            </span>
+                            <span class="btn btn-outline-secondary btn-sm">Choose file</span>
+                            <input asp-for="WarrantyFile" type="file" accept="@FileUploads.DocumentAccept"
+                                   data-max-bytes="@FileUploads.MaxBytes" class="file-drop-input" />
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            @* No Branch or Location to pick (AssetsController.PlaceAssets):
+               the branch of whoever registers it, in the chosen
+               department's main room. *@
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head">
+                    <span class="register-step-num">3</span>
+                    <div>
+                        <div class="register-step-title">Where it goes</div>
+                        <div class="register-step-sub">Your branch: @(place?.BranchName ?? "none"). It is placed in the department's room.</div>
+                    </div>
+                </div>
+                <div class="register-step-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label asp-for="DepartmentID" class="form-label">Belongs to</label>
+                            <select asp-for="DepartmentID" id="departmentSelect" class="form-select">
+                                @foreach (var dept in place?.Departments ?? new List<AssetPlaceDepartment>())
+                                {
+                                    <option value="@dept.DepartmentID" data-property="@(dept.IsProperty ? "true" : null)" data-room="@dept.RoomName" data-room-code="@dept.RoomCode"
+                                            selected="@(dept.DepartmentID == Model.DepartmentID)">@(dept.IsProperty ? dept.DepartmentName + " (in stock, can be borrowed)" : dept.DepartmentName)</option>
+                                }
+                            </select>
+                            <span asp-validation-for="DepartmentID" class="text-danger"></span>
+                            <div class="form-text">Property Department: in stock and can be borrowed. Any other department: issued to it, and it cannot be borrowed.</div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-label">Goes to</div>
+                            <div class="reg-place">
+                                <strong>@(place?.BranchName ?? "No branch")</strong>
+                                <span>Room: <span id="roomName">—</span></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            @* The code is not typed: it comes from the model's category and
+               the next free number, and is shown here before saving. *@
+            <div class="asset-card register-side mb-3">
+                <div class="register-side-label">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M3 12V3h9l9 9-9 9z" /><circle cx="7.5" cy="7.5" r="1.5" /></svg>
+                    Asset code
+                </div>
+                <div id="codePreview" class="register-code is-empty">Pick a model to see its code.</div>
+                <div id="codeNote" class="register-side-note">Given automatically when you save, and never changes.</div>
+            </div>
+
+            <div class="asset-card register-side mb-3">
+                <div class="register-side-title">Photo <span class="register-optional">(optional)</span></div>
+                <label class="file-drop file-drop-tall" data-preview="true">
+                    <img class="file-drop-preview d-none" alt="" />
+                    <span class="file-drop-icon">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></svg>
+                    </span>
+                    <span class="file-drop-title" data-empty="Drop a photo or click to upload">Drop a photo or click to upload</span>
+                    <span class="file-drop-sub">JPG, PNG or WebP · up to @FileUploads.MaxMegabytes MB</span>
+                    <input asp-for="ImageFile" type="file" accept="@FileUploads.ImageAccept"
+                           data-max-bytes="@FileUploads.MaxBytes" class="file-drop-input" />
+                </label>
+            </div>
+
+            <div class="asset-card register-toggle">
+                <span class="register-toggle-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6v12M7 6v12M11 6v12M14 6v12M18 6v12M20 6v12" /></svg>
+                </span>
+                <label for="createBarcode" class="flex-grow-1 mb-0">
+                    <span class="register-toggle-title">Add barcode label</span>
+                    <span class="register-toggle-sub">Makes a barcode when you save. You can still add one later from the asset's page.</span>
+                    <span id="barcodePreview" class="register-toggle-preview"></span>
+                </label>
+                <div class="form-check form-switch m-0">
+                    <input asp-for="CreateBarcode" type="checkbox" role="switch" id="createBarcode" class="form-check-input" />
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="register-footer">
+        <span>Model, asset name and department are required.</span>
+        <div class="d-flex" style="gap:8px;">
+            <a asp-action="Index" class="btn btn-outline-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary">Create asset</button>
+        </div>
+    </div>
+</form>
+
+<partial name="_QuickAddModel" />
+
+@section Scripts {
+    @{
+        await Html.RenderPartialAsync("_ValidationScriptsPartial");
+    }
+    <script>
+        (function () {
+            // The branch it goes to; the room is the department's.
+            var branchCode = '@(place?.BranchCode)';
+            var departmentSelect = document.getElementById('departmentSelect');
+            function roomOption() { return departmentSelect ? departmentSelect.options[departmentSelect.selectedIndex] : null; }
+
+            // ---- Code preview and name --------------------------------
+            // Shows the asset code a save would give (AssetCodes.Format) and
+            // the barcode it would get (AssetCodes.Barcode: branch letter,
+            // location code or XXX, asset code). Picking a model also starts
+            // the name off from the model if nothing is typed yet.
+            var codePreview = document.getElementById('codePreview');
+            var barcodePreview = document.getElementById('barcodePreview');
+            var assetName = document.getElementById('assetName');
+            var maxNumber = @SchoolInventoryManagement.BLL.Services.AssetCodes.MaxNumber;
+            var picked = null;
+            var autoName = '';
+
+            function pad(n) { var s = String(n); while (s.length < 4) s = '0' + s; return s; }
+
+            var codeNote = document.getElementById('codeNote');
+            var createBarcode = document.getElementById('createBarcode');
+
+            // The big code on the side card. Messages use the small style.
+            function showCode(text, isCode) {
+                codePreview.textContent = text;
+                codePreview.classList.toggle('is-empty', !isCode);
+            }
+
+            function updateCode() {
+                barcodePreview.textContent = '';
+                if (!picked) {
+                    showCode('Pick a model to see its code.', false);
+                    codeNote.textContent = 'Given automatically when you save, and never changes.';
+                    return;
+                }
+                if (picked.next > maxNumber) {
+                    showCode(picked.prefix + ' has no numbers left — give the category a new code.', false);
+                    return;
+                }
+                var code = picked.prefix + '-' + pad(picked.next);
+                showCode(code, true);
+                codeNote.textContent = 'Given automatically when you save — from the '
+                    + (picked.category || picked.prefix) + ' prefix and the next free number.';
+
+                if (!createBarcode.checked) return;
+
+                if (!branchCode) return;
+                var option = roomOption();
+                var locationCode = (option && option.getAttribute('data-room-code')) || '@SchoolInventoryManagement.BLL.Services.AssetCodes.NoLocation';
+                barcodePreview.textContent = 'Barcode: ' + branchCode + '-' + locationCode + '-' + code;
+            }
+
+            document.addEventListener('model-picked', function (e) {
+                picked = e.detail;
+                // Named like Bulk register's units: "Model - Unit N", N
+                // counting this model's units (its first is Unit 1).
+                if (picked && (!assetName.value.trim() || assetName.value === autoName)) {
+                    autoName = picked.name + ' - Unit ' + (picked.nextUnit || 1);
+                    assetName.value = autoName;
+                }
+                updateCode();
+            });
+
+            // The barcode it would get is shown under the switch while on.
+            createBarcode.addEventListener('change', updateCode);
+
+            // The room shown under "Goes to" follows the department.
+            function showRoom() {
+                var o = roomOption();
+                document.getElementById('roomName').textContent = (o && o.getAttribute('data-room')) || 'none yet';
+            }
+            if (departmentSelect) departmentSelect.addEventListener('change', function () { showRoom(); updateCode(); });
+            showRoom();
+            updateCode();
+        })();
+    </script>
+}

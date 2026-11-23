@@ -1,0 +1,182 @@
+@model SchoolInventoryManagement.BLL.DTOs.BudgetYearDTO
+@using SchoolInventoryManagement.BLL.DTOs
+@{
+    ViewData["Title"] = "Budgets";
+    // Department budgets (Scripts/036, yearly since Scripts/037): each
+    // department's annual budget for purchase orders, what its requisitions'
+    // orders dated this year add up to, and what is left. It starts again on
+    // January 1.
+    var totalLeft = Model.TotalBudget - Model.TotalSpent;
+    var branches = Model.Departments.Select(d => d.BranchName).Where(b => !string.IsNullOrEmpty(b)).Distinct().OrderBy(b => b).ToList();
+    string Peso(decimal v) => (v < 0 ? "-₱" : "₱") + Math.Abs(v).ToString("N2");
+    string Level(DepartmentBudgetDTO d) => d.IsOver ? "is-over" : d.Percent >= 80 ? "is-near" : "";
+}
+@if (TempData["ErrorMessage"] != null)
+{
+    <div class="alert alert-danger">@TempData["ErrorMessage"]</div>
+}
+
+<div class="sab-page-head">
+    <div>
+        <h2>Budgets</h2>
+        <p class="sab-page-sub">What each department can spend on purchase orders in a year (January to December), and what its requisitions' orders add up to. A purchase order that would go over the budget cannot be saved. It starts again every January 1.</p>
+    </div>
+    <div class="sab-page-actions bd-month" aria-label="Year">
+        <a asp-action="Index" asp-route-year="@(Model.Year - 1)" class="btn btn-outline-secondary" aria-label="Previous year">&lsaquo;</a>
+        <span class="bd-month-name">@Model.Year</span>
+        @if (Model.IsCurrentYear)
+        {
+            <span class="btn btn-outline-secondary disabled" aria-hidden="true">&rsaquo;</span>
+        }
+        else
+        {
+            <a asp-action="Index" asp-route-year="@(Model.Year + 1)" class="btn btn-outline-secondary" aria-label="Next year">&rsaquo;</a>
+            <a asp-action="Index" class="btn btn-outline-secondary">This year</a>
+        }
+    </div>
+</div>
+
+<div class="myassets-stats lk-stats-4 bd-stats mb-3">
+    <div><span>Budget for @Model.Year</span><strong>@Peso(Model.TotalBudget)</strong></div>
+    <div><span>Spent</span><strong>@Peso(Model.TotalSpent)</strong></div>
+    <div class="@(totalLeft < 0 ? "is-late" : "")"><span>Left</span><strong>@Peso(totalLeft)</strong></div>
+    <div class="@(Model.OverCount > 0 ? "is-late" : "")"><span>Over budget</span><strong>@Model.OverCount department@(Model.OverCount == 1 ? "" : "s")</strong></div>
+</div>
+
+<div class="sab-table-card bd-card">
+    <div class="md-toolbar bd-toolbar">
+        <label class="asset-search">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+            <input type="text" id="bdSearch" autocomplete="off" placeholder="Department..." aria-label="Search departments" />
+        </label>
+        @if (branches.Count > 1)
+        {
+            <select class="form-select form-select-sm bd-branch" id="bdBranch" aria-label="Branch">
+                <option value="">All branches</option>
+                @foreach (var b in branches)
+                {
+                    <option value="@b.ToLowerInvariant()">@b</option>
+                }
+            </select>
+        }
+        <label class="bd-only-over"><input type="checkbox" id="bdOver" class="form-check-input" /> Over budget only</label>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table asset-table bd-table mb-0">
+            <thead>
+                <tr>
+                    <th>Department</th>
+                    <th class="text-end">Annual budget</th>
+                    <th class="text-end">Spent</th>
+                    <th class="text-end">Left</th>
+                    <th class="bd-col-meter d-none d-md-table-cell">Used</th>
+                    <th class="text-end"><span class="visually-hidden">Orders</span></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var d in Model.Departments)
+                {
+                    <tr class="bd-row @Level(d)" id="d-@d.DepartmentID" data-bd-row data-name="@d.DepartmentName.ToLowerInvariant()" data-branch="@d.BranchName.ToLowerInvariant()" data-over="@(d.IsOver ? "1" : "0")">
+                        <td>
+                            <span class="fw-semibold">@d.DepartmentName</span>
+                            @if (d.IsProperty) {<span class="md-tag bd-tag">Property</span>}
+                            <small class="d-block text-muted">@d.BranchName</small>
+                        </td>
+                        <td class="text-end">@Peso(d.AnnualBudget)</td>
+                        <td class="text-end">@Peso(d.Spent)<small class="d-block text-muted">@d.OrderCount order@(d.OrderCount == 1 ? "" : "s")</small></td>
+                        <td class="text-end fw-semibold bd-left">@Peso(d.Left)@if (d.IsOver) {<small class="d-block">over</small>}</td>
+                        <td class="bd-col-meter d-none d-md-table-cell">
+                            <div class="bd-meter" role="img" aria-label="@d.Percent% of the budget used"><span style="width:@(Math.Min(100, d.Percent))%"></span></div>
+                            <small class="text-muted">@d.Percent%</small>
+                        </td>
+                        <td class="text-end">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" data-bd-toggle aria-expanded="false" aria-controls="dd-@d.DepartmentID">Details</button>
+                        </td>
+                    </tr>
+                    <tr class="bd-detail" id="dd-@d.DepartmentID" hidden>
+                        <td colspan="6">
+                            <div class="bd-detail-body">
+                                <div class="bd-detail-orders">
+                                    <div class="register-side-label mb-2">Purchase orders in @Model.Year</div>
+                                    @if (!d.Orders.Any())
+                                    {
+                                        <p class="text-muted mb-0">None yet.</p>
+                                    }
+                                    else
+                                    {
+                                        <ul class="bd-orders">
+                                            @foreach (var o in d.Orders)
+                                            {
+                                                <li>
+                                                    <span class="min-w-0">
+                                                        <a asp-controller="Purchasing" asp-action="Order" asp-route-id="@o.PurchaseOrderID" class="fw-semibold">@o.PONumber</a>
+                                                        <span class="text-muted">· @o.OrderDate.ToString("MMM d") · @o.SupplierName · requisition #@o.NewItemRequestID@(o.IsDraft ? " · not printed yet" : "")</span>
+                                                        <small class="d-block text-muted">@o.Items</small>
+                                                    </span>
+                                                    <strong>@Peso(o.Total)</strong>
+                                                </li>
+                                            }
+                                        </ul>
+                                    }
+                                </div>
+                                @if (Model.CanEdit)
+                                {
+                                    <form asp-action="Set" method="post" class="bd-set">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="departmentId" value="@d.DepartmentID" />
+                                        <input type="hidden" name="year" value="@Model.Year" />
+                                        <label class="form-label" for="amt-@d.DepartmentID">Annual budget</label>
+                                        <div class="input-group">
+                                            <span class="input-group-text">₱</span>
+                                            <input type="number" id="amt-@d.DepartmentID" name="amount" class="form-control" min="0" step="0.01" value="@d.AnnualBudget.ToString("0.00")" required />
+                                            <button type="submit" class="btn btn-primary">Save</button>
+                                        </div>
+                                        <small class="text-muted">Used for every year, this one included.</small>
+                                    </form>
+                                }
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <div class="myassets-nomatch" id="bdEmpty" hidden>No department matches.</div>
+</div>
+
+@section Scripts {
+    <script>
+        (function () {
+            var rows = Array.from(document.querySelectorAll('[data-bd-row]'));
+            var search = document.getElementById('bdSearch'), branch = document.getElementById('bdBranch'), over = document.getElementById('bdOver');
+            function detailOf(row) { return document.getElementById('dd-' + row.id.slice(2)); }
+            function filter() {
+                var q = search.value.trim().toLowerCase(), b = branch ? branch.value : '', o = over.checked;
+                var shown = 0;
+                rows.forEach(function (r) {
+                    var ok = (!q || r.dataset.name.indexOf(q) !== -1) && (!b || r.dataset.branch === b) && (!o || r.dataset.over === '1');
+                    r.hidden = !ok;
+                    if (!ok) { detailOf(r).hidden = true; r.querySelector('[data-bd-toggle]').setAttribute('aria-expanded', 'false'); }
+                    if (ok) shown++;
+                });
+                document.getElementById('bdEmpty').hidden = shown > 0;
+            }
+            [search, branch, over].forEach(function (x) { if (x) { x.addEventListener('input', filter); x.addEventListener('change', filter); } });
+            function toggle(row, open) {
+                var detail = detailOf(row), btn = row.querySelector('[data-bd-toggle]');
+                open = open === undefined ? detail.hidden : open;
+                detail.hidden = !open;
+                row.classList.toggle('is-open', open);
+                btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+                btn.textContent = open ? 'Hide' : 'Details';
+            }
+            rows.forEach(function (r) {
+                r.addEventListener('click', function (e) { if (!e.target.closest('a, input, select, form')) toggle(r); });
+            });
+            // Back from saving a budget: that department, opened.
+            var hit = location.hash && document.querySelector(location.hash.replace(/[^#\w-]/g, ''));
+            if (hit && hit.matches('[data-bd-row]')) { toggle(hit, true); hit.scrollIntoView({ block: 'center' }); }
+        })();
+    </script>
+}

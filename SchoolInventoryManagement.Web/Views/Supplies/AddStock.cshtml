@@ -1,0 +1,278 @@
+﻿@model SchoolInventoryManagement.BLL.DTOs.AddStockDTO
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.Web.Helpers
+@using SchoolInventoryManagement.Web.ViewModels
+@{
+    ViewData["Title"] = "Add Stock";
+    var supplies = ViewBag.SupplyChoices as List<SupplyChoiceDTO> ?? new();
+    var locations = ViewBag.Locations as List<SupplyLocationOption> ?? new();
+    var sources = ViewBag.Sources as string[] ?? Array.Empty<string>();
+    var backId = ViewBag.BackToSupplyId as int?;
+    var newSupplyLines = ViewBag.NewSupplyLines as List<NewItemRequestItemDTO> ?? new();
+    var departments = ViewBag.Departments as List<SupplyDepartmentOption> ?? new();
+    // Opened from an arrived new-item request for supplies.
+    var ticket = ViewBag.Ticket as NewItemRequestResponseDTO;
+}
+
+<form asp-action="AddStock" method="post" class="register-form page-fill" id="addStockForm">
+    @Html.AntiForgeryToken()
+    @Html.FormTicket()
+    <input type="hidden" name="backToSupplyId" value="@backId" />
+    <input type="hidden" name="NewItemRequestID" value="@Model.NewItemRequestID" />
+    <input type="hidden" name="returnTo" value="@(ViewBag.ReturnTo as string)" />
+
+    <div class="asset-detail-head">
+        <div>
+            <nav class="asset-crumbs" aria-label="Breadcrumb">
+                <a asp-controller="Assets" asp-action="Index">Items</a>
+                <span aria-hidden="true">&rsaquo;</span>
+                <a asp-action="Index">Supplies</a>
+                <span aria-hidden="true">&rsaquo;</span>
+                <span>Add stock</span>
+            </nav>
+            <h2 class="asset-detail-title">Add stock</h2>
+            @if (ticket is null)
+            {
+                <div class="asset-detail-sub">Supplies put in the Property Department's stock (of each room's branch). Prices come from Purchasing's purchase orders.</div>
+            }
+            else
+            {
+                <div class="asset-detail-sub"><span>Supplies that arrived for <a asp-controller="NewItemRequests" asp-action="Details" asp-route-id="@ticket.NewItemRequestID">requisition #@ticket.NewItemRequestID</a>, for the @ticket.DepartmentName. They go into the Property Department's stock, and are handed to the @ticket.DepartmentName when the requisition is sent.</span></div>
+            }
+        </div>
+    </div>
+
+    <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
+
+    @if (!supplies.Any())
+    {
+        <div class="alert alert-warning">There are no supplies yet. <a asp-action="Create">Add a supply first</a>.</div>
+    }
+
+    @if (ticket is not null && ticket.RequestStatus != SchoolInventoryManagement.DAL.Entities.Enums.NewItemStatus.Arrived)
+    {
+        <div class="alert alert-warning">Requisition #@ticket.NewItemRequestID is no longer waiting to be sent out, so nothing can be added for it.</div>
+    }
+
+    @if (ticket is not null)
+    {
+        <partial name="_BoughtItems" model="((ViewBag.Bought as List<BoughtLine>) ?? new List<BoughtLine>(), (int?)null)" />
+    }
+
+    @if (newSupplyLines.Any())
+    {
+        <div class="alert alert-warning">
+            <strong>@newSupplyLines.Count suppl@(newSupplyLines.Count == 1 ? "y" : "ies") on this requisition @(newSupplyLines.Count == 1 ? "is" : "are") new to the school</strong> and not listed below.
+            Add @(newSupplyLines.Count == 1 ? "it" : "each one") as a new supply, with the amount that arrived as its opening quantity:
+            <ul class="mb-0 mt-1">
+                @foreach (var line in newSupplyLines)
+                {
+                    <li>
+                        @line.ItemName &times;@line.Quantity@(string.IsNullOrWhiteSpace(line.Unit) ? "" : " " + SupplyText.Unit(line.Quantity, line.Unit))
+                        &middot; <a asp-action="Create" asp-route-newItemRequestItemId="@line.NewItemRequestItemID" asp-route-returnTo="@(ViewBag.ReturnTo as string)">Add as a new supply &rarr;</a>
+                    </li>
+                }
+            </ul>
+        </div>
+    }
+
+    @* Where it came from and whose it is are no longer asked: stock goes to
+       the Property Department of each room's branch, and prices come from
+       Purchasing's purchase orders. *@
+    <input type="hidden" name="Source" value="@(string.IsNullOrEmpty(Model.Source) ? "Direct purchase" : Model.Source)" />
+    <input type="hidden" name="DepartmentID" id="stockDepartment" value="" />
+
+    <div class="asset-card register-step">
+        <div class="register-step-head">
+            <div class="register-step-title flex-grow-1">What to add</div>
+            <span class="nr-head-note" id="lineSummary"></span>
+        </div>
+        <div class="register-step-body pb-0">
+            <div id="lineRows">
+                @for (var i = 0; i < Model.Lines.Count; i++)
+                {
+                    var line = Model.Lines[i];
+                    <div class="row g-2 align-items-start py-2 border-bottom" data-line>
+                        <div class="col-12 col-md-3" data-cell="SupplyID">
+                            <label class="form-label small asset-muted mb-1">Supply</label>
+                            <select name="Lines[@i].SupplyID" class="form-select" data-field="SupplyID" data-combobox aria-label="Supply">
+                                <option value="">Search a supply...</option>
+                                @foreach (var s in supplies)
+                                {
+                                    <option value="@s.SupplyID" data-unit="@s.Unit" data-total="@s.TotalQuantity" data-location="@s.DefaultLocationID"
+                                            data-sub="@(s.TotalQuantity + " " + SupplyText.Unit(s.TotalQuantity, s.Unit) + " in stock")"
+                                            selected="@(s.SupplyID == line.SupplyID)">@s.SupplyName</option>
+                                }
+                            </select>
+                            <div class="asset-muted small mt-1">In stock now (Property): <span data-now-out>&mdash;</span></div>
+                        </div>
+                        <div class="col-4 col-md-2">
+                            <label class="form-label small asset-muted mb-1">Add</label>
+                            <input name="Lines[@i].Quantity" value="@line.Quantity" type="number" min="1" step="1" inputmode="numeric"
+                                   class="form-control" data-field="Quantity" aria-label="Quantity to add" />
+                        </div>
+                        <div class="col-12 col-md-5" data-cell="LocationID">
+                            <label class="form-label small asset-muted mb-1">Put in</label>
+                            <select name="Lines[@i].LocationID" class="form-select" data-field="LocationID" data-combobox aria-label="Put in">
+                                <option value="">Search a location...</option>
+                                @foreach (var g in locations.GroupBy(l => l.BranchName))
+                                {
+                                    <optgroup label="@g.Key">
+                                        @foreach (var l in g)
+                                        {
+                                            <option value="@l.Id" selected="@(l.Id == line.LocationID)">@l.Name</option>
+                                        }
+                                    </optgroup>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-9 col-md-1">
+                            <div class="form-label small asset-muted mb-1">After</div>
+                            <div data-after-out>&mdash;</div>
+                        </div>
+                        <div class="col-3 col-md-1 text-end">
+                            <div class="form-label small mb-1">&nbsp;</div>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" data-remove aria-label="Remove this row">&times;</button>
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+        <div class="register-step-body">
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="addLine">+ Add another supply</button>
+            <div class="form-text mt-2">Only supplies already on the list can be picked. For something new, use New item &rsaquo; Supply first. "In stock now" is the Property Department's, across every room.</div>
+        </div>
+    </div>
+
+    <div class="register-footer">
+        <div class="d-flex ms-auto" style="gap:8px;">
+            @if (ticket is not null)
+            {
+                @* Back to the requisition, where adding to stock is still the next step. *@
+                <a href="@Url.RequisitionBackUrl(ticket.NewItemRequestID, ViewBag.ReturnTo as string)" class="btn btn-outline-secondary">Cancel</a>
+            }
+            else if (backId.HasValue)
+            {
+                <a asp-action="Details" asp-route-id="@backId" class="btn btn-outline-secondary">Cancel</a>
+            }
+            else
+            {
+                <a asp-action="Index" class="btn btn-outline-secondary">Cancel</a>
+            }
+            <button type="submit" class="btn btn-primary" disabled="@(!supplies.Any())">Save and add to stock</button>
+        </div>
+    </div>
+</form>
+
+@section Scripts {
+    @{
+        await Html.RenderPartialAsync("_ValidationScriptsPartial");
+    }
+    <script>
+        (function () {
+            var body = document.getElementById('lineRows');
+            var summary = document.getElementById('lineSummary');
+
+            // Same rule as SupplyText.Unit: 1 box, 6 boxes, 42 reams.
+            function plural(u, q) {
+                if (!u || q === 1) return u || '';
+                var l = u.toLowerCase();
+                if (/s$/.test(l) && !/ss$/.test(l)) return u;
+                if (/(x|ch|sh|ss)$/.test(l)) return u + 'es';
+                return u + 's';
+            }
+
+            function rows() { return Array.prototype.slice.call(body.querySelectorAll('[data-line]')); }
+            function field(row, name) { return row.querySelector('select[data-field=' + name + '], input[data-field=' + name + ']'); }
+
+            // The model binder needs Lines[0], Lines[1]... with no gaps.
+            function renumber() {
+                rows().forEach(function (row, i) {
+                    row.querySelectorAll('[data-field]').forEach(function (el) {
+                        el.name = 'Lines[' + i + '].' + el.getAttribute('data-field');
+                    });
+                    row.querySelector('[data-remove]').disabled = rows().length === 1;
+                });
+            }
+
+            function sync() {
+                var units = 0, filled = 0;
+                rows().forEach(function (row) {
+                    var supply = field(row, 'SupplyID');
+                    var opt = supply.options[supply.selectedIndex];
+                    var q = Math.max(0, parseInt(field(row, 'Quantity').value, 10) || 0);
+                    var now = row.querySelector('[data-now-out]'), after = row.querySelector('[data-after-out]');
+                    if (supply.value) {
+                        var total = parseInt(opt.dataset.total, 10) || 0, u = opt.dataset.unit;
+                        // Another department's stock does not add to Property's.
+                        var own = !!document.getElementById('stockDepartment').value;
+                        var end = own ? total : total + q;
+                        now.textContent = total + ' ' + plural(u, total);
+                        after.innerHTML = '';
+                        var strong = document.createElement('strong');
+                        strong.textContent = end;
+                        after.appendChild(strong);
+                        after.appendChild(document.createTextNode(' ' + plural(u, end) + (own ? ' (its own stock is apart)' : '')));
+                        filled++; units += q;
+                    } else {
+                        now.textContent = '\u2014'; after.textContent = '\u2014';
+                    }
+                });
+                summary.textContent = filled + ' suppl' + (filled === 1 ? 'y' : 'ies') + ' \u00B7 ' + units + ' unit' + (units === 1 ? '' : 's');
+            }
+
+            document.getElementById('stockDepartment').addEventListener('change', function () { sync(); });
+
+            // Picking a supply offers the room it is already kept in.
+            function offerRoom(row) {
+                var supply = field(row, 'SupplyID'), loc = field(row, 'LocationID');
+                var opt = supply.options[supply.selectedIndex];
+                if (supply.value && !loc.value && opt && opt.dataset.location) {
+                    loc.value = opt.dataset.location;
+                    loc.dispatchEvent(new Event('combo-sync'));
+                }
+            }
+
+            body.addEventListener('change', function (e) {
+                if (e.target.matches && e.target.matches('select[data-field=SupplyID]')) offerRoom(e.target.closest('[data-line]'));
+                sync();
+            });
+            body.addEventListener('input', sync);
+            body.addEventListener('click', function (e) {
+                var btn = e.target.closest('[data-remove]');
+                if (!btn || rows().length === 1) return;
+                btn.closest('[data-line]').remove();
+                renumber(); sync();
+            });
+
+            // A new row gets its own search boxes: the copied ones are
+            // wired to the row they came from.
+            function freshSelect(first, copy, name) {
+                var cell = copy.querySelector('[data-cell=' + name + ']');
+                var plain = field(first, name).cloneNode(true);
+                plain.classList.remove('combo-native');
+                plain.removeAttribute('aria-hidden');
+                plain.removeAttribute('tabindex');
+                plain.selectedIndex = 0;
+                var old = cell.querySelector('.combo') || cell.querySelector('select');
+                cell.replaceChild(plain, old);
+                if (window.sabCombobox) window.sabCombobox(plain);
+                return cell;
+            }
+
+            document.getElementById('addLine').addEventListener('click', function () {
+                var first = rows()[0];
+                var copy = first.cloneNode(true);
+                var cell = freshSelect(first, copy, 'SupplyID');
+                freshSelect(first, copy, 'LocationID');
+                field(copy, 'Quantity').value = 1;
+                body.appendChild(copy);
+                renumber(); sync();
+                (cell.querySelector('.combo-input') || field(copy, 'SupplyID')).focus();
+            });
+
+            rows().forEach(offerRoom);
+            renumber(); sync();
+        })();
+    </script>
+}

@@ -1,0 +1,478 @@
+﻿@model List<SchoolInventoryManagement.Web.ViewModels.ApprovalLineChoice>
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@* The unit picker shared by ApproveBorrow and ApproveTransfer: one card per
+   line of the ticket, a checkbox per Available unit of that model. Each
+   line allows exactly its amount to be ticked -- once it is reached, the
+   rest of that line locks. The service checks the same thing.
+
+   Every line has its own filters (search, location, condition), listing
+   only where that model's units actually are, and its own Auto-fill.
+   Filters only hide units from view; a ticked unit always stays visible
+   so nothing is picked out of sight.
+
+   Auto-fill picks, for its line, the best units among those its filters
+   leave showing:
+     1. closest to where they are going -- already at the target location,
+        then in the target's branch, then anywhere else;
+     2. then best condition (New, Excellent, Good, Repaired, Fair, Poor);
+     3. then lowest code.
+   Damaged units are never auto-picked, though they can still be ticked by
+   hand. The target is the pickup location for a Borrow (the dropdown on
+   the page when the approver chooses it) and the destination for a
+   Transfer. Every line is auto-filled as the page loads when nothing is
+   ticked yet. *@
+@*  Layout: a chip per model at the top (jumps to its card), then one card
+    per model with its filters, Auto-fill, a tile per unit, and its own
+    pager. Picked units are listed first. *@
+@{
+    var targetLocationId = ViewBag.TargetLocationID as int?;
+    Dictionary<int, int> locationBranches = (ViewBag.LocationBranches as Dictionary<int, int>) ?? new Dictionary<int, int>();
+    Dictionary<int, string> branchNames = (ViewBag.BranchNames as Dictionary<int, string>) ?? new Dictionary<int, string>();
+    // Every condition is offered in the filter, whether or not a unit is in it.
+    var allConditions = Enum.GetValues<ConditionStatus>();
+
+    // Lower is better; Auto-fill sorts by it. Damaged is left out entirely.
+    int ConditionRank(ConditionStatus c) => c switch
+    {
+        ConditionStatus.New => 0,
+        ConditionStatus.Excellent => 1,
+        ConditionStatus.Good => 2,
+        ConditionStatus.Repaired => 3,
+        ConditionStatus.Fair => 4,
+        ConditionStatus.Poor => 5,
+        _ => 9
+    };
+}
+
+<div id="unitPicker"
+     data-target-location="@targetLocationId"
+     data-location-branches="@System.Text.Json.JsonSerializer.Serialize(locationBranches.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value))">
+
+    @if (Model.Count > 1)
+    {
+        <div class="picker-chips" aria-label="Models on this request">
+            @for (var i = 0; i < Model.Count; i++)
+            {
+                <a href="#line-@i" class="picker-chip" data-chip-for="@i">@Model[i].ModelName <span class="chip-count">0/@Model[i].Quantity</span></a>
+            }
+        </div>
+    }
+
+    @for (var li = 0; li < Model.Count; li++)
+    {
+        var line = Model[li];
+        // This model's own choices: only the places its units are, and
+        // only the conditions they are in.
+        var locationChoices = line.Units
+            .Where(u => u.LocationID is not null)
+            .GroupBy(u => u.LocationID!.Value)
+            .Select(g => new { Id = g.Key, Name = g.First().LocationName })
+            .OrderBy(x => x.Name)
+            .ToList();
+        var anyWithoutLocation = line.Units.Any(u => u.LocationID is null);
+        // The branches this model's units are in.
+        var branchChoices = line.Units
+            .Where(u => u.BranchID is not null)
+            .Select(u => u.BranchID!.Value)
+            .Distinct()
+            .Select(id => new { Id = id, Name = branchNames.TryGetValue(id, out var n) ? n : "Branch " + id })
+            .OrderBy(b => b.Name)
+            .ToList();
+
+        <section class="asset-card picker-line unit-line mb-3" id="line-@li" data-line="@li" data-quantity="@line.Quantity" data-page-size="20">
+            <div class="picker-head">
+                <div class="min-w-0">
+                    <span class="picker-model">@line.ModelName</span>
+                    <span class="picker-asked">asked for @line.Quantity · @line.Units.Count available</span>
+                </div>
+                <div class="picker-progress">
+                    <span class="picker-picked"><span class="line-count">0</span> of @line.Quantity picked</span>
+                    <span class="picker-bar"><span class="picker-bar-fill"></span></span>
+                </div>
+            </div>
+
+            <div class="picker-body">
+                @if (line.Units.Count < line.Quantity)
+                {
+                    <div class="alert alert-warning py-2 mb-2">
+                        Only @line.Units.Count unit@(line.Units.Count == 1 ? " is" : "s are") available now,
+                        but @line.Quantity @(line.Quantity == 1 ? "was" : "were") asked for.
+                        This request cannot be approved as it stands — reject it with a note, or wait for units to come back.
+                    </div>
+                }
+
+                @if (line.Units.Any())
+                {
+                    <div class="picker-tools">
+                        <label class="asset-search picker-search">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                            <input type="search" class="line-search" placeholder="Search code..." autocomplete="off" aria-label="Search unit codes" />
+                        </label>
+                        @* Branch, location and condition behind one Filters button.
+                           The branch narrows the locations. *@
+                        <div class="dropdown">
+                            <button type="button" class="asset-tool-btn line-filter-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z" /></svg>
+                                Filters <span class="asset-filter-count line-filter-count d-none"></span>
+                            </button>
+                            <div class="dropdown-menu md-filter-menu">
+                                <label class="form-label">Branch</label>
+                                <select class="form-select form-select-sm mb-2 line-branch" aria-label="Branch">
+                                    <option value="">All branches</option>
+                                    @foreach (var b in branchChoices)
+                                    {
+                                        <option value="@b.Id">@b.Name</option>
+                                    }
+                                </select>
+                                <label class="form-label">Location</label>
+                                <select class="form-select form-select-sm mb-2 line-location" aria-label="Location">
+                                    <option value="">All locations</option>
+                                    @foreach (var l in locationChoices)
+                                    {
+                                        <option value="@l.Id" data-branch="@(locationBranches.TryGetValue(l.Id, out var lb) ? lb : 0)">@l.Name</option>
+                                    }
+                                    @if (anyWithoutLocation)
+                                    {
+                                        <option value="none">No location</option>
+                                    }
+                                </select>
+                                <label class="form-label">Condition</label>
+                                <select class="form-select form-select-sm line-condition" aria-label="Condition">
+                                    <option value="">All conditions</option>
+                                    @foreach (var c in allConditions)
+                                    {
+                                        <option value="@c">@DisplayText.Humanize(c.ToString())</option>
+                                    }
+                                </select>
+                                <button type="button" class="btn btn-link btn-sm px-0 mt-2 md-filter-clear line-clear-filters">Clear filters</button>
+                            </div>
+                        </div>
+                        <span class="picker-tools-gap"></span>
+                        <button type="button" class="btn btn-outline-secondary btn-sm line-autofill">Auto-fill</button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm line-untick">Untick all</button>
+                    </div>
+                }
+
+                <div class="line-short alert alert-warning py-2 mb-2 d-none"></div>
+
+                <div class="picker-grid">
+                    @foreach (var unit in line.Units)
+                    {
+                        var weak = unit.Condition == ConditionStatus.Damaged || unit.Condition == ConditionStatus.Poor;
+                        <label class="unit-tile unit-row"
+                               data-code="@unit.AssetCode.ToLowerInvariant()"
+                               data-location="@(unit.LocationID?.ToString() ?? "none")"
+                               data-branch="@unit.BranchID"
+                               data-condition="@unit.Condition"
+                               data-condition-rank="@ConditionRank(unit.Condition)">
+                            <input type="checkbox" class="unit-box" name="AssetIDs" value="@unit.AssetID" checked="@unit.Selected" />
+                            <span class="unit-check" aria-hidden="true"></span>
+                            <span class="asset-code-chip">@unit.AssetCode</span>
+                            <span class="unit-cond @(weak ? "is-weak" : "")">@DisplayText.Humanize(unit.Condition.ToString())</span>
+                            <span class="unit-loc">@(unit.LocationName ?? "no location")</span>
+                        </label>
+                    }
+                </div>
+                <div class="line-hidden text-muted small mt-2 d-none"></div>
+
+                @if (line.Units.Any())
+                {
+                    <div class="picker-foot">
+                        <span class="line-range"></span>
+                        <div class="picker-foot-right">
+                            <span class="text-muted">Show</span>
+                            <div class="dropdown">
+                                <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle line-size-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">20</button>
+                                <div class="dropdown-menu dropdown-menu-end picker-size-menu">
+                                    @foreach (var n in new[] { 10, 20, 50 })
+                                    {
+                                        <button type="button" class="dropdown-item line-size" data-size="@n">@n per page</button>
+                                    }
+                                    <div class="dropdown-divider"></div>
+                                    <div class="picker-size-custom">
+                                        <label class="small text-muted mb-0">Custom</label>
+                                        <input type="number" min="1" max="500" class="form-control form-control-sm line-size-input" aria-label="Units per page" />
+                                        <button type="button" class="btn btn-primary btn-sm line-size-apply">Apply</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <span class="text-muted">per page</span>
+                            <div class="line-pager d-flex" style="gap:6px;"></div>
+                        </div>
+                    </div>
+                }
+            </div>
+        </section>
+    }
+</div>
+
+<script>
+    // Runs once the page has loaded, after site.js (the branch filter
+    // helper) and the page's own scripts (which listen for picker-change).
+    document.addEventListener('DOMContentLoaded', function () {
+        var picker = document.getElementById('unitPicker');
+        if (!picker) return;
+
+        var branchOf = JSON.parse(picker.getAttribute('data-location-branches') || '{}');
+
+        // Borrow with no pickup point from the requester: the approver's
+        // dropdown decides. Otherwise the fixed target from the server.
+        var pickupSelect = document.getElementById('PickupLocationID');
+        function targetLocation() {
+            return (pickupSelect && pickupSelect.value) || picker.getAttribute('data-target-location') || '';
+        }
+
+        function nearness(row, target) {
+            if (!target) return 0;
+            if (row.getAttribute('data-location') === target) return 0;
+            var targetBranch = branchOf[target];
+            if (targetBranch !== undefined && row.getAttribute('data-branch') === String(targetBranch)) return 1;
+            return 2;
+        }
+
+        // Tells the page how many units are ticked in all (the Approve
+        // button shows it).
+        function announce() {
+            var total = picker.querySelectorAll('.unit-box:checked').length;
+            picker.dispatchEvent(new CustomEvent('picker-change', { bubbles: true, detail: { total: total } }));
+        }
+
+        // Everything below works on one line (one model) at a time.
+        function setUpLine(line) {
+            var index = line.getAttribute('data-line');
+            var quantity = parseInt(line.getAttribute('data-quantity'), 10);
+            var pageSize = parseInt(line.getAttribute('data-page-size'), 10) || 20;
+            var page = 1;
+            var grid = line.querySelector('.picker-grid');
+            var rows = Array.from(line.querySelectorAll('.unit-row'));
+            var order = rows.slice();
+            var box = function (r) { return r.querySelector('.unit-box'); };
+            var boxes = rows.map(box);
+            var search = line.querySelector('.line-search');
+            var locationFilter = line.querySelector('.line-location');
+            var conditionFilter = line.querySelector('.line-condition');
+            var branchFilter = line.querySelector('.line-branch');
+            var filterBtn = line.querySelector('.line-filter-btn');
+            // The branch narrows the location list (site.js).
+            var locationsByBranch = branchFilter && locationFilter
+                ? sabFilterByBranch(locationFilter, branchFilter, { showAllWhenEmpty: true, auto: false })
+                : null;
+            var short = line.querySelector('.line-short');
+            var hiddenNote = line.querySelector('.line-hidden');
+            var range = line.querySelector('.line-range');
+            var pager = line.querySelector('.line-pager');
+            var sizeBtn = line.querySelector('.line-size-btn');
+            var chip = picker.querySelector('[data-chip-for="' + index + '"]');
+
+            // Re-ranks on a new pickup point only while the picks are still
+            // Auto-fill's own -- never over a hand-made choice.
+            var autoFilled = false;
+
+            // Picked units first, then the list as it came. Re-sorted when
+            // Auto-fill or Untick all runs, not on every tick, so a unit
+            // does not jump away from under the pointer.
+            function reorder() {
+                order = rows.slice().sort(function (a, b) {
+                    return (box(b).checked ? 1 : 0) - (box(a).checked ? 1 : 0) || rows.indexOf(a) - rows.indexOf(b);
+                });
+                order.forEach(function (r) { grid.appendChild(r); });
+            }
+
+            function sync() {
+                var ticked = boxes.filter(function (b) { return b.checked; }).length;
+                line.querySelector('.line-count').textContent = ticked;
+                line.querySelector('.picker-bar-fill').style.width = Math.min(100, quantity ? ticked * 100 / quantity : 0) + '%';
+                line.classList.toggle('is-complete', ticked === quantity);
+                boxes.forEach(function (b) {
+                    if (!b.checked) b.disabled = ticked >= quantity;
+                    b.closest('.unit-tile').classList.toggle('is-picked', b.checked);
+                    b.closest('.unit-tile').classList.toggle('is-locked', b.disabled);
+                });
+                if (chip) {
+                    chip.querySelector('.chip-count').textContent = ticked + '/' + quantity;
+                    chip.classList.toggle('is-complete', ticked === quantity);
+                }
+                announce();
+            }
+
+            function matches(row) {
+                var text = (search && search.value || '').trim().toLowerCase();
+                if (text && row.getAttribute('data-code').indexOf(text) === -1) return false;
+                if (branchFilter && branchFilter.value && row.getAttribute('data-branch') !== branchFilter.value) return false;
+                if (locationFilter && locationFilter.value && row.getAttribute('data-location') !== locationFilter.value) return false;
+                if (conditionFilter && conditionFilter.value && row.getAttribute('data-condition') !== conditionFilter.value) return false;
+                return true;
+            }
+
+            // Filters hide units (a ticked one always stays); the pager then
+            // pages through what is left.
+            function applyFilters() {
+                var shown = order.filter(function (r) { return box(r).checked || matches(r); });
+                var hidden = rows.length - shown.length;
+                var pages = Math.max(1, Math.ceil(shown.length / pageSize));
+                page = Math.min(page, pages);
+                var onPage = shown.slice((page - 1) * pageSize, page * pageSize);
+                rows.forEach(function (r) { r.classList.toggle('d-none', onPage.indexOf(r) === -1); });
+
+                hiddenNote.textContent = hidden ? hidden + ' more unit' + (hidden === 1 ? '' : 's') + ' hidden by the filters.' : '';
+                hiddenNote.classList.toggle('d-none', !hidden);
+
+                if (range) {
+                    range.textContent = shown.length
+                        ? ((page - 1) * pageSize + 1) + '–' + Math.min(page * pageSize, shown.length) + ' of ' + shown.length + ' · picked first'
+                        : 'No units match';
+                }
+                if (pager) {
+                    pager.innerHTML = '';
+                    if (pages > 1) {
+                        var add = function (label, target, cls) {
+                            var b = document.createElement('button');
+                            b.type = 'button';
+                            b.className = 'asset-page ' + (cls || '');
+                            b.innerHTML = label;
+                            if (!cls) b.addEventListener('click', function () { page = target; applyFilters(); });
+                            pager.appendChild(b);
+                        };
+                        add('&lsaquo;', page - 1, page === 1 ? 'disabled' : '');
+                        for (var n = 1; n <= pages; n++) {
+                            if (pages > 5 && n !== 1 && n !== pages && Math.abs(n - page) > 1) {
+                                if (n === 2 || n === pages - 1) {
+                                    var gap = document.createElement('span');
+                                    gap.className = 'asset-page-gap';
+                                    gap.textContent = '…';
+                                    pager.appendChild(gap);
+                                }
+                                continue;
+                            }
+                            add(String(n), n, n === page ? 'current' : '');
+                        }
+                        add('&rsaquo;', page + 1, page === pages ? 'disabled' : '');
+                    }
+                }
+            }
+
+            function autoFill() {
+                var target = targetLocation();
+                boxes.forEach(function (b) { b.checked = false; b.disabled = false; });
+
+                var candidates = rows
+                    .filter(function (r) { return matches(r) && r.getAttribute('data-condition') !== 'Damaged'; })
+                    .sort(function (a, b) {
+                        return (nearness(a, target) - nearness(b, target))
+                            || (parseInt(a.getAttribute('data-condition-rank'), 10) - parseInt(b.getAttribute('data-condition-rank'), 10))
+                            || a.getAttribute('data-code').localeCompare(b.getAttribute('data-code'));
+                    });
+
+                candidates.slice(0, quantity).forEach(function (r) { box(r).checked = true; });
+
+                var picked = Math.min(candidates.length, quantity);
+                short.textContent = picked < quantity && rows.length >= quantity
+                    ? 'Auto-fill found only ' + picked + ' suitable unit' + (picked === 1 ? '' : 's') +
+                      ' with these filters (Damaged units are skipped). Clear the filters or tick the rest by hand.'
+                    : '';
+                short.classList.toggle('d-none', !short.textContent);
+
+                reorder();
+                page = 1;
+                sync();
+                applyFilters();
+                autoFilled = true;
+            }
+
+            boxes.forEach(function (b) {
+                b.addEventListener('change', function () {
+                    autoFilled = false;
+                    short.classList.add('d-none');
+                    sync();
+                    applyFilters();
+                });
+            });
+
+            // How many filters are on, on the Filters button.
+            function markFilters() {
+                if (!filterBtn) return;
+                var on = [branchFilter, locationFilter, conditionFilter].filter(function (f) { return f && f.value; }).length;
+                var badge = filterBtn.querySelector('.line-filter-count');
+                filterBtn.classList.toggle('active', on > 0);
+                badge.textContent = on;
+                badge.classList.toggle('d-none', on === 0);
+            }
+
+            if (branchFilter) branchFilter.addEventListener('change', function () {
+                if (locationsByBranch) locationsByBranch.refresh();
+            });
+
+            [search, branchFilter, locationFilter, conditionFilter].forEach(function (el) {
+                if (!el) return;
+                var go = function () { page = 1; applyFilters(); markFilters(); };
+                el.addEventListener('input', go);
+                el.addEventListener('change', go);
+            });
+
+            var clear = line.querySelector('.line-clear-filters');
+            if (clear) clear.addEventListener('click', function () {
+                search.value = '';
+                if (branchFilter) branchFilter.value = '';
+                if (locationsByBranch) locationsByBranch.refresh();
+                locationFilter.value = ''; conditionFilter.value = '';
+                page = 1;
+                applyFilters();
+                markFilters();
+            });
+
+            var fill = line.querySelector('.line-autofill');
+            if (fill) fill.addEventListener('click', autoFill);
+
+            var untick = line.querySelector('.line-untick');
+            if (untick) untick.addEventListener('click', function () {
+                boxes.forEach(function (b) { b.checked = false; });
+                short.classList.add('d-none');
+                autoFilled = false;
+                reorder();
+                sync();
+                applyFilters();
+            });
+
+            // Units per page: 10 / 20 / 50, or any number typed in.
+            function setSize(n) {
+                if (!(n > 0)) return;
+                pageSize = Math.min(500, Math.round(n));
+                page = 1;
+                if (sizeBtn) sizeBtn.textContent = pageSize;
+                line.querySelectorAll('.line-size').forEach(function (b) {
+                    b.classList.toggle('active', parseInt(b.dataset.size, 10) === pageSize);
+                });
+                applyFilters();
+                if (sizeBtn && window.bootstrap) bootstrap.Dropdown.getOrCreateInstance(sizeBtn).hide();
+            }
+            line.querySelectorAll('.line-size').forEach(function (b) {
+                b.addEventListener('click', function () { setSize(parseInt(b.dataset.size, 10)); });
+            });
+            var sizeInput = line.querySelector('.line-size-input');
+            var sizeApply = line.querySelector('.line-size-apply');
+            if (sizeApply) sizeApply.addEventListener('click', function () { setSize(parseInt(sizeInput.value, 10)); });
+            if (sizeInput) sizeInput.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter') { e.preventDefault(); setSize(parseInt(sizeInput.value, 10)); }
+            });
+
+            if (pickupSelect) pickupSelect.addEventListener('change', function () {
+                if (autoFilled) autoFill();
+            });
+
+            return { autoFill: autoFill, sync: sync, applyFilters: applyFilters, reorder: reorder, setSize: setSize };
+        }
+
+        var lines = Array.from(picker.querySelectorAll('.unit-line')).map(setUpLine);
+
+        // First visit: nothing ticked, so every line is filled. After a
+        // failed post the approver's own ticks come back and are kept.
+        if (picker.querySelector('.unit-box:checked')) {
+            lines.forEach(function (l) { l.reorder(); l.sync(); l.applyFilters(); });
+        } else {
+            lines.forEach(function (l) { l.autoFill(); });
+        }
+        // Fewer units a page on a phone, where the tiles stack in one column.
+        var startSize = window.matchMedia('(max-width: 576px)').matches ? 10 : 20;
+        lines.forEach(function (l) { l.setSize(startSize); });
+    });
+</script>

@@ -1,0 +1,454 @@
+﻿@model SchoolInventoryManagement.BLL.DTOs.DepartmentHoldingsDTO
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@{
+    ViewData["Title"] = "My Assets";
+    // What this page shows, for the live updates (_Layout, site.js).
+    ViewData["LiveScope"] = "mine";
+
+    // One entry per request; a unit assigned directly from an asset page has
+    // no request, so it is an entry of its own. The list on the left groups
+    // them by what needs doing, the panel on the right shows the one picked.
+    var today = PhilippineTime.Today;
+    // Shared by the department (Scripts/029): every member sees what any
+    // member borrowed, with who borrowed it, and what the department keeps.
+    var me = int.Parse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)!.Value);
+    var dept = string.IsNullOrEmpty(Model.DepartmentName) ? "your department" : "the " + Model.DepartmentName;
+    var kept = Model.Kept.GroupBy(k => k.ModelName)
+        .Select((g, i) => (Id: $"kept-{i}", Name: g.Key, Units: g.ToList(),
+                           Rooms: g.Select(u => u.LocationName).Where(l => !string.IsNullOrEmpty(l)).Select(l => l!).Distinct().OrderBy(l => l).ToList()))
+        .ToList();
+    var entries = Model.Borrowed
+        .GroupBy(a => a.RequestID is int id ? $"req-{id}" : $"asg-{a.AssignmentID}")
+        .Select(g => new Entry(g.Key, g.OrderBy(a => a.AssetCode).ToList(), today))
+        .ToList();
+
+    var groups = new[]
+    {
+        (Key: "late", Label: "Needs returning", Items: entries.Where(e => e.Group == "late").OrderBy(e => e.ReturnBy).ToList()),
+        (Key: "transit", Label: "On the way to you", Items: entries.Where(e => e.Group == "transit").OrderByDescending(e => e.Issued).ToList()),
+        (Key: "use", Label: "In use", Items: entries.Where(e => e.Group == "use").OrderBy(e => e.ReturnBy ?? DateTime.MaxValue).ToList())
+    };
+    var ordered = groups.SelectMany(g => g.Items).ToList();
+
+    var requestCount = entries.Count(e => e.IsRequest);
+    var directCount = entries.Count - requestCount;
+    var sources = new List<string>();
+    if (requestCount > 0) { sources.Add($"{requestCount} request{(requestCount == 1 ? "" : "s")}"); }
+    if (directCount > 0) { sources.Add($"{directCount} item{(directCount == 1 ? "" : "s")} assigned by staff"); }
+}
+
+@functions {
+    // Everything the list item and the detail panel need for one request
+    // (or one directly assigned unit).
+    class Entry
+    {
+        public Entry(string id, List<AssetAssignmentResponseDTO> units, DateTime today)
+        {
+            Id = id;
+            Units = units;
+            First = units[0];
+            IsRequest = First.RequestID is not null;
+            Issued = units.Min(a => a.AssignmentDate).Date;
+            ReturnBy = First.RequestReturnBy?.Date;
+            Today = today;
+
+            // "Asahi Stand Fan ×5, Aspire Laptop ×5", as on My Requests.
+            Models = units.GroupBy(a => a.ModelName)
+                .Select(g => (Name: g.Key, Count: g.Count()))
+                .ToList();
+            // Up to two models read as "Folding Table ×4, Monoblock Chair ×2";
+            // more than that, "Renzo Chair, Folding Chair, SO2 Chair +2", with
+            // the full breakdown in the chips on the panel.
+            Title = !IsRequest ? First.AssetName
+                : Models.Count <= 2 ? string.Join(", ", Models.Select(m => m.Count > 1 ? $"{m.Name} ×{m.Count}" : m.Name))
+                : string.Join(", ", Models.Take(3).Select(m => m.Name)) + (Models.Count > 3 ? $" +{Models.Count - 3}" : "");
+
+            var anyOverdue = units.Any(a => a.AssetStatus == AssetStatus.Overdue)
+                || (ReturnBy.HasValue && ReturnBy.Value < today && units.Any(a => a.AssetStatus != AssetStatus.InTransit));
+            var allTransit = units.All(a => a.AssetStatus == AssetStatus.InTransit);
+            Group = anyOverdue ? "late" : allTransit ? "transit" : "use";
+
+            var issuers = units.Select(a => a.AssignedByUser.FullName).Distinct().ToList();
+            IssuedBy = issuers.Count == 1 ? issuers[0] : $"{issuers[0]} +{issuers.Count - 1}";
+        }
+
+        public string Id { get; }
+        public List<AssetAssignmentResponseDTO> Units { get; }
+
+        // Who borrowed them: the department shares them, the borrower
+        // answers for them.
+        public List<string> Borrowers => Units.Select(u => u.AssignedToUser.FullName).Distinct().ToList();
+        public bool IsMine(int userId) => Units.All(u => u.AssignedToUser.UserID == userId);
+        public AssetAssignmentResponseDTO First { get; }
+        public bool IsRequest { get; }
+        public DateTime Issued { get; }
+        public DateTime? ReturnBy { get; }
+        public DateTime Today { get; }
+        public List<(string Name, int Count)> Models { get; }
+        public string Title { get; }
+        public string Group { get; }
+        public string IssuedBy { get; }
+
+        // Every room the units are in, lower-cased and joined by "|" for
+        // the location filter ([data-md-filter] matches one of them).
+        public List<string> Locations => Units.Select(u => u.CurrentLocationName).Where(l => !string.IsNullOrEmpty(l)).Select(l => l!).Distinct().OrderBy(l => l).ToList();
+
+        public int DaysLate => ReturnBy.HasValue ? (Today - ReturnBy.Value).Days : 0;
+
+        public string TypeLabel => IsRequest ? (First.RequestType?.ToString() ?? "Request") : "Assigned";
+
+        // The short note on the right of a list item.
+        public string DueNote =>
+            Group == "late" ? $"{DaysLate} day{(DaysLate == 1 ? "" : "s")} late"
+            : Group == "transit" ? DisplayText.InTransitLabel(First.RequestType)
+            : !ReturnBy.HasValue ? "No due date"
+            : ReturnBy.Value == Today ? "Due today"
+            : $"in {(ReturnBy.Value - Today).Days} day{((ReturnBy.Value - Today).Days == 1 ? "" : "s")}";
+
+        // The line under the title in the list.
+        public string SubLine =>
+            !IsRequest ? $"{First.AssetCode} · since {Issued:MMM d}"
+            : $"{Units.Count} unit{(Units.Count == 1 ? "" : "s")} · "
+              + (Group == "transit" || !ReturnBy.HasValue ? $"issued {Issued:MMM d}" : $"due {ReturnBy:MMM d}");
+
+        // Words the search box matches on.
+        public string SearchText => string.Join(" ", new[] { Title, TypeLabel, First.RequestID?.ToString() ?? "" }
+            .Concat(Models.Select(m => m.Name))
+            .Concat(Units.Select(u => u.AssetCode + " " + u.AssetName))).ToLowerInvariant();
+    }
+
+    static string Initials(string name)
+    {
+        var initials = string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(p => p[0])).ToUpperInvariant();
+        return initials.Length > 2 ? initials[..2] : initials;
+    }
+
+    static string Pct(double value) =>
+        Math.Clamp(value, 0, 100).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "%";
+}
+
+@if (TempData["ErrorMessage"] != null)
+{
+    <div class="alert alert-danger">@TempData["ErrorMessage"]</div>
+}
+
+<div class="asset-detail-head">
+    <div>
+        <h2 class="asset-detail-title">My Assets</h2>
+        <div class="asset-detail-sub">
+            <span>
+                Everything @dept has, shared by everyone in it: what any member borrowed (with who borrowed it), and what the department keeps.
+                Borrowed items stay here until a Property Officer records their return.
+            </span>
+        </div>
+    </div>
+    <div class="asset-detail-actions">
+        <a asp-controller="AssetRequests" asp-action="Create" class="btn btn-primary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            New Request
+        </a>
+    </div>
+</div>
+
+@if (!Model.Borrowed.Any() && !Model.Kept.Any())
+{
+    <div class="sab-table-card">
+        <div class="sab-empty">
+            <div class="sab-empty-title">Your department has nothing yet</div>
+            <p>Browse what the school has and request what you need.</p>
+            <a asp-controller="AssetRequests" asp-action="Create" class="btn btn-primary">Request an asset</a>
+        </div>
+    </div>
+}
+else
+{
+    @* Selecting, search, paging and the phone back-and-forth come from the
+       shared list-and-details script in site.js ([data-md]). *@
+    <div class="sab-table-card myassets" id="myAssets" data-md data-page-size="8" data-noun="entries">
+        <aside class="myassets-list" aria-label="Your requests and assets">
+            <div class="md-toolbar">
+                <label class="asset-search">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                    <input type="text" id="myAssetsSearch" data-md-search autocomplete="off" placeholder="Search my assets..." aria-label="Search my assets" />
+                </label>
+                <div class="dropdown">
+                    <button type="button" class="asset-tool-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z" /></svg>
+                        Filters
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end md-filter-menu">
+                        <label class="form-label">Status</label>
+                        <div class="mb-2">
+                        <select class="form-select form-select-sm" data-md-filter="group" data-combobox>
+                            <option value="">Any</option>
+                            <option value="late">Needs returning</option>
+                            <option value="transit">On the way to you</option>
+                            <option value="use">In use</option>
+                            <option value="kept">Kept by the department</option>
+                        </select>
+                        </div>
+                        <label class="form-label">Type</label>
+                        <div class="mb-2">
+                        <select class="form-select form-select-sm" data-md-filter="type" data-combobox>
+                            <option value="">Any</option>
+                            @* Every type, whether or not one is out right now. *@
+                            <option value="assigned">Assigned</option>
+                            <option value="borrow">Borrow</option>
+                            <option value="department">Department's</option>
+                        </select>
+                        </div>
+                        <label class="form-label">Location</label>
+                        <select class="form-select form-select-sm" data-md-filter="loc" data-combobox>
+                            <option value="">Any</option>
+                            @foreach (var l in entries.SelectMany(e => e.Locations).Concat(kept.SelectMany(k => k.Rooms)).Distinct().OrderBy(l => l))
+                            {
+                                <option value="@l.ToLowerInvariant()">@l</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            @foreach (var g in groups.Where(g => g.Items.Any()))
+            {
+                <div class="myassets-group" data-md-group>
+                    <div class="myassets-group-label group-@g.Key">@g.Label · <span data-md-count>@g.Items.Count</span></div>
+                    @foreach (var e in g.Items)
+                    {
+                        <button type="button" class="myassets-item item-@e.Group" data-entry="@e.Id" data-search="@e.SearchText"
+                                data-group="@e.Group" data-type="@e.TypeLabel.ToLowerInvariant()"
+                                data-loc="|@string.Join("|", e.Locations.Select(l => l.ToLowerInvariant()))|"
+                                aria-controls="panel-@e.Id">
+                            <span class="myassets-badge">
+                                @if (e.IsRequest)
+                                {
+                                    <strong>#@e.First.RequestID</strong>
+                                }
+                                <small>@e.TypeLabel</small>
+                            </span>
+                            <span class="myassets-item-main">
+                                <span class="myassets-item-title">@e.Title</span>
+                                <span class="myassets-item-sub">@e.SubLine@(e.IsMine(me) ? "" : " · " + string.Join(", ", e.Borrowers))</span>
+                            </span>
+                            <span class="myassets-item-due">@e.DueNote</span>
+                        </button>
+                    }
+                </div>
+            }
+            @if (kept.Any())
+            {
+                <div class="myassets-group" data-md-group>
+                    <div class="myassets-group-label group-kept">Kept by @dept · <span data-md-count>@kept.Count</span></div>
+                    @foreach (var k in kept)
+                    {
+                        <button type="button" class="myassets-item item-kept" data-entry="@k.Id"
+                                data-search="@(k.Name + " " + string.Join(" ", k.Units.Select(u => u.AssetCode + " " + u.AssetName))).ToLowerInvariant()"
+                                data-group="kept" data-type="department"
+                                data-loc="|@string.Join("|", k.Rooms.Select(l => l.ToLowerInvariant()))|"
+                                aria-controls="panel-@k.Id">
+                            <span class="myassets-badge"><small>Dept</small></span>
+                            <span class="myassets-item-main">
+                                <span class="myassets-item-title">@k.Name@(k.Units.Count > 1 ? " ×" + k.Units.Count : "")</span>
+                                <span class="myassets-item-sub">@k.Units.Count unit@(k.Units.Count == 1 ? "" : "s")@(k.Rooms.Any() ? " · " + string.Join(", ", k.Rooms) : "")</span>
+                            </span>
+                            <span class="myassets-item-due">Kept</span>
+                        </button>
+                    }
+                </div>
+            }
+            <div class="myassets-nomatch" data-md-empty hidden>Nothing matches your search or filters.</div>
+
+            <div class="md-foot">
+                <span data-md-range></span>
+                <div data-md-pager></div>
+            </div>
+        </aside>
+
+        <section class="myassets-detail">
+            @foreach (var e in ordered)
+            {
+                var unitCount = e.Units.Count;
+                var late = e.Group == "late";
+                var statusClass = late ? "overdue" : e.Group == "transit" ? "intransit" : "assigned";
+                var statusLabel = late ? "Overdue" : e.Group == "transit" ? DisplayText.InTransitLabel(e.First.RequestType) : "In use";
+
+                <article class="myassets-panel" id="panel-@e.Id" data-panel="@e.Id" hidden>
+                    <button type="button" class="myassets-back" data-back>&larr; All my assets</button>
+
+                    <div class="myassets-panel-head">
+                        <div class="min-w-0">
+                            <div class="myassets-panel-meta">
+                                <span class="myassets-type">@e.TypeLabel</span>
+                                <span>@(e.IsRequest ? $"Request #{e.First.RequestID}" : e.First.AssetCode) · @unitCount unit@(unitCount == 1 ? "" : "s") · borrowed by @(e.IsMine(me) ? "you" : string.Join(", ", e.Borrowers))</span>
+                            </div>
+                            <h3 class="myassets-panel-title">@e.Title</h3>
+                        </div>
+                        <div class="myassets-panel-actions">
+                            <span class="asset-pill asset-status st-@statusClass">@statusLabel</span>
+                            @* Only the requester sees the request itself. *@
+                            @if (e.IsRequest && e.IsMine(me))
+                            {
+                                <a asp-controller="AssetRequests" asp-action="Details" asp-route-id="@e.First.RequestID" asp-route-from="mine" class="btn btn-outline-secondary">View request &rarr;</a>
+                            }
+                            else
+                            {
+                                <a asp-action="Details" asp-route-id="@e.First.AssetID" class="btn btn-outline-secondary">View asset &rarr;</a>
+                            }
+                        </div>
+                    </div>
+
+                    @if (e.IsRequest && e.Models.Count > 1)
+                    {
+                        <div class="myassets-chips">
+                            @foreach (var m in e.Models)
+                            {
+                                <span class="myassets-chip">@m.Name <strong>×@m.Count</strong></span>
+                            }
+                        </div>
+                    }
+
+                    @if (late)
+                    {
+                        <div class="myassets-alert">
+                            <strong>@e.DaysLate day@(e.DaysLate == 1 ? "" : "s") late.</strong>
+                            Bring @(unitCount == 1 ? "it" : "these") to the Property Officer so the return can be recorded.
+                        </div>
+                    }
+                    else if (e.Group == "transit")
+                    {
+                        <div class="myassets-alert is-transit">
+                            <strong>Ready for you.</strong>
+                            @(unitCount == 1 ? "It has" : "These have") been set aside — collect @(unitCount == 1 ? "it" : "them") from the Property Officer.
+                        </div>
+                    }
+
+                    <div class="myassets-stats">
+                        <div><span>Issued</span><strong>@e.Issued.ToString("MMM d, yyyy")</strong></div>
+                        <div class="@(late ? "is-late" : "")"><span>Return by</span><strong>@(e.ReturnBy?.ToString("MMM d, yyyy") ?? "No due date")</strong></div>
+                        <div><span>Units</span><strong>@unitCount</strong></div>
+                        <div><span>Issued by</span><strong>@e.IssuedBy</strong></div>
+                    </div>
+
+                    @* Issued -> return by -> today, to scale. Late: today is
+                       the far end and the overrun is red. Not yet due: the
+                       return date is the far end and today sits on the way. *@
+                    @if (e.ReturnBy.HasValue)
+                    {
+                        var rb = e.ReturnBy.Value;
+                        var end = late ? e.Today : rb;
+                        var span = Math.Max(1, (end - e.Issued).TotalDays);
+                        var rbPos = (rb - e.Issued).TotalDays / span * 100;
+                        var todayPos = Math.Clamp((e.Today - e.Issued).TotalDays / span * 100, 0, 100);
+                        // Labels keep clear of each other and of the ends.
+                        var rbLabelPos = Math.Clamp(rbPos, 22, 78);
+                        <div class="myassets-timeline @(late ? "is-late" : "")">
+                            <div class="myassets-track">
+                                <span class="myassets-fill" style="width:@Pct(late ? rbPos : todayPos)"></span>
+                                @if (late)
+                                {
+                                    <span class="myassets-over" style="left:@Pct(rbPos); width:@Pct(100 - rbPos)"></span>
+                                }
+                                <span class="myassets-dot dot-start" style="left:0%"></span>
+                                <span class="myassets-dot dot-due" style="left:@Pct(rbPos)"></span>
+                                @if (late)
+                                {
+                                    <span class="myassets-dot dot-today" style="left:100%"></span>
+                                }
+                                else if (e.Today >= e.Issued)
+                                {
+                                    <span class="myassets-dot dot-now" style="left:@Pct(todayPos)" title="Today"></span>
+                                }
+                            </div>
+                            <div class="myassets-labels">
+                                <span style="left:0%" class="lbl-start">Issued<b>@e.Issued.ToString("MMM d")</b></span>
+                                <span style="left:@Pct(late ? rbLabelPos : 100)" class="@(late ? "lbl-mid" : "lbl-end")">Return by<b>@rb.ToString("MMM d")</b></span>
+                                @if (late)
+                                {
+                                    <span style="left:100%" class="lbl-end lbl-today">Today<b>@e.Today.ToString("MMM d")</b></span>
+                                }
+                            </div>
+                        </div>
+                    }
+
+                    <h4 class="myassets-units-title">Units on this @(e.IsRequest ? "request" : "assignment")</h4>
+                    <div class="myassets-units">
+                        <table class="table myassets-table">
+                            <thead>
+                                <tr>
+                                    <th>Code</th>
+                                    <th>Asset</th>
+                                    <th>Status</th>
+                                    <th>Condition when issued</th>
+                                    <th>Issued by</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @for (var i = 0; i < e.Units.Count; i++)
+                                {
+                                    var u = e.Units[i];
+                                    <tr class="@(i >= 4 ? "myassets-extra" : "")" hidden="@(i >= 4)" data-extra="@(i >= 4 ? "true" : null)">
+                                        <td data-label="Code"><a asp-action="Details" asp-route-id="@u.AssetID" class="asset-code-chip">@u.AssetCode</a></td>
+                                        <td data-label="Asset">@u.AssetName</td>
+                                        <td data-label="Status">
+                                            <span class="asset-pill asset-status st-@u.AssetStatus.ToString().ToLowerInvariant()">@DisplayText.AssetStatusLabel(u.AssetStatus, u.RequestType)</span>
+                                        </td>
+                                        <td data-label="Condition">@DisplayText.Humanize(u.ConditionOnAssignment.ToString())</td>
+                                        <td data-label="Issued by">
+                                            <span class="history-person">
+                                                <span class="history-avatar">@Initials(u.AssignedByUser.FullName)</span>
+                                                @u.AssignedByUser.FullName
+                                            </span>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                        @if (e.Units.Count > 4)
+                        {
+                            <button type="button" class="myassets-more" data-more="@(e.Units.Count - 4)">
+                                Show @(e.Units.Count - 4) more unit@(e.Units.Count - 4 == 1 ? "" : "s") &#9662;
+                            </button>
+                        }
+                    </div>
+                </article>
+            }
+
+            @foreach (var k in kept)
+            {
+                <article class="myassets-panel" id="panel-@k.Id" data-panel="@k.Id" hidden>
+                    <button type="button" class="myassets-back" data-back>&larr; All my assets</button>
+                    <div class="myassets-panel-head">
+                        <div class="min-w-0">
+                            <div class="myassets-panel-meta">
+                                <span class="myassets-type">Department's</span>
+                                <span>Kept by @dept · @k.Units.Count unit@(k.Units.Count == 1 ? "" : "s")</span>
+                            </div>
+                            <h3 class="myassets-panel-title">@k.Name</h3>
+                        </div>
+                        <div class="myassets-panel-actions">
+                            <span class="asset-pill asset-status st-assigned">Kept</span>
+                        </div>
+                    </div>
+                    <h4 class="myassets-units-title">Units</h4>
+                    <div class="myassets-units">
+                        <table class="table myassets-table">
+                            <thead><tr><th>Code</th><th>Asset</th><th>Room</th><th>Condition</th></tr></thead>
+                            <tbody>
+                                @foreach (var u in k.Units)
+                                {
+                                    <tr>
+                                        <td data-label="Code"><a asp-action="Details" asp-route-id="@u.AssetID" class="asset-code-chip">@u.AssetCode</a></td>
+                                        <td data-label="Asset">@u.AssetName</td>
+                                        <td data-label="Room">@(u.LocationName ?? "—")</td>
+                                        <td data-label="Condition">@DisplayText.Humanize(u.Condition.ToString())</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </article>
+            }
+        </section>
+    </div>
+}

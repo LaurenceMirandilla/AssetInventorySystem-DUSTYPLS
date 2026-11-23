@@ -1,0 +1,245 @@
+@model SchoolInventoryManagement.BLL.DTOs.CreateSupplyDTO
+@using SchoolInventoryManagement.Web.Helpers
+@using SchoolInventoryManagement.Web.ViewModels
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@{
+    ViewData["Title"] = "New Supply";
+    var categories = ViewBag.SupplyCategories as List<SupplyOption> ?? new();
+    var locations = ViewBag.Locations as List<SupplyLocationOption> ?? new();
+    var units = ViewBag.Units as List<string> ?? new();
+    var commonUnits = new[] { "piece", "box", "ream", "bottle", "pack", "roll", "set", "gallon" };
+    // Opened from an arrived new-item request: a supply new to the school.
+    var fromRequest = ViewBag.FromRequest as SupplyFromRequest;
+}
+
+<form asp-action="Create" method="post" class="register-form page-fill" id="supplyForm">
+    @Html.AntiForgeryToken()
+    @Html.FormTicket()
+    <input type="hidden" asp-for="NewItemRequestItemID" />
+    <input type="hidden" name="returnTo" value="@(ViewBag.ReturnTo as string)" />
+
+    <div class="asset-detail-head">
+        <div>
+            <nav class="asset-crumbs" aria-label="Breadcrumb">
+                <a asp-controller="Assets" asp-action="Index">Items</a>
+                <span aria-hidden="true">&rsaquo;</span>
+                <a asp-action="Index">Supplies</a>
+                <span aria-hidden="true">&rsaquo;</span>
+                <span>New supply</span>
+            </nav>
+            <h2 class="asset-detail-title">New supply</h2>
+            <div class="asset-detail-sub">Something that gets used up. It is counted by quantity, so it has no code, serial number or holder.</div>
+        </div>
+    </div>
+
+    @if (fromRequest is not null)
+    {
+        <div class="sab-callout mb-3">
+            <span class="sab-callout-label">Requisition #@fromRequest.RequestId</span>
+            Filled in from the requisition. The opening quantity is what arrived: it goes into the Property Department's stock, and is handed to the @fromRequest.DepartmentName when the requisition is sent out.
+        </div>
+        <partial name="_BoughtItems" model="((ViewBag.Bought as List<BoughtLine>) ?? new List<BoughtLine>(), ViewBag.BoughtCurrent as int?)" />
+    }
+
+    <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
+
+    @if (!categories.Any())
+    {
+        <div class="alert alert-warning">
+            There are no supply categories yet. <a asp-controller="Categories" asp-action="Create" asp-route-kind="@CategoryKind.Supply">Add one first</a>, for example "Office supplies".
+        </div>
+    }
+
+    <div class="row g-3 align-items-start">
+        <div class="col-lg-8">
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head"><div class="register-step-title">What it is</div></div>
+                <div class="register-step-body">
+                    <div class="row g-3">
+                        <div class="col-md-7">
+                            <label asp-for="SupplyName" class="form-label">Name</label>
+                            <input asp-for="SupplyName" class="form-control" id="supplyName" maxlength="150" autocomplete="off" placeholder="e.g. Masking tape, 1 inch" />
+                            <span asp-validation-for="SupplyName" class="text-danger small"></span>
+                        </div>
+                        <div class="col-md-5">
+                            <label asp-for="CategoryID" class="form-label">Category</label>
+                            <select asp-for="CategoryID" class="form-select" id="supplyCategory">
+                                <option value="">Pick a category</option>
+                                @foreach (var c in categories)
+                                {
+                                    <option value="@c.Id">@c.Name</option>
+                                }
+                            </select>
+                            <span asp-validation-for="CategoryID" class="text-danger small"></span>
+                            @* A category not on the list yet: added here, without leaving the form. *@
+                            <div class="text-end">
+                                <button type="button" class="btn btn-link btn-sm p-0 mt-1" data-bs-toggle="collapse" data-bs-target="#newCategory" aria-expanded="false" id="newCategoryToggle">+ Add a new category</button>
+                            </div>
+                            <div class="collapse" id="newCategory">
+                                <div class="input-group input-group-sm mt-1">
+                                    <input type="text" id="newCategoryName" class="form-control" maxlength="100" placeholder="e.g. Office Supplies" aria-label="New category name" />
+                                    <button type="button" class="btn btn-primary" id="newCategorySave">Add</button>
+                                </div>
+                                <div class="text-danger small mt-1" id="newCategoryError" hidden></div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <label asp-for="Unit" class="form-label">Counted per</label>
+                            <input asp-for="Unit" class="form-control" id="supplyUnit" maxlength="30" autocomplete="off" list="unitList" placeholder="e.g. box" />
+                            <datalist id="unitList">
+                                @foreach (var u in units.Concat(commonUnits).Distinct(StringComparer.OrdinalIgnoreCase))
+                                {
+                                    <option value="@u"></option>
+                                }
+                            </datalist>
+                            <div class="form-text">The unit people ask for it in.</div>
+                            <span asp-validation-for="Unit" class="text-danger small"></span>
+                        </div>
+                        @* No price here: it comes from Purchasing's purchase orders. *@
+                        <input type="hidden" id="supplyPrice" value="" />
+                        <div class="col-12">
+                            <label asp-for="Description" class="form-label">Description <span class="register-optional">optional</span></label>
+                            <textarea asp-for="Description" class="form-control" rows="2" maxlength="255" placeholder="Brand or size notes."></textarea>
+                            <span asp-validation-for="Description" class="text-danger small"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="asset-card register-step">
+                <div class="register-step-head"><div class="register-step-title">Stock</div></div>
+                <div class="register-step-body">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label asp-for="OpeningQuantity" class="form-label">Opening quantity</label>
+                            <input asp-for="OpeningQuantity" class="form-control" id="supplyQty" type="number" min="0" step="1" inputmode="numeric" />
+                            <div class="form-text">How many are on the shelf right now.</div>
+                            <span asp-validation-for="OpeningQuantity" class="text-danger small"></span>
+                        </div>
+                        @* No "Kept in" to pick (Scripts/037): the Property Department's room of
+                           the branch (the requisition's, when it was bought for one). *@
+                        <div class="col-md-4">
+                            <div class="form-label">Kept in</div>
+                            <div class="reg-place"><strong>Property Department</strong><span id="keptIn">@DisplayText.Or(ViewBag.KeptIn as string, "No room yet")</span></div>
+                            <div class="form-text">Set automatically.</div>
+                        </div>
+                        <div class="col-md-4">
+                            <label asp-for="LowStockLevel" class="form-label">Low-stock level, per branch</label>
+                            <input asp-for="LowStockLevel" class="form-control" id="supplyLow" type="number" min="0" step="1" inputmode="numeric" />
+                            <div class="form-text">At or below this it reads "Running low". 0 turns the warning off.</div>
+                            <span asp-validation-for="LowStockLevel" class="text-danger small"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="asset-card register-step lk-side">
+                <div class="register-step-head"><div class="register-step-title">How it will appear</div></div>
+                <div class="register-step-body">
+                    <div class="lk-code-box">
+                        <div class="lk-code-label" id="pvName">New supply</div>
+                        <div class="lk-code-big" id="pvQty">0</div>
+                    </div>
+                    <p class="lk-side-note mb-2"><span class="asset-pill asset-status st-overdue" id="pvStatus">Out of stock</span></p>
+                    <p class="lk-side-note" id="pvWhere"></p>
+                    <p class="lk-side-note" id="pvValue" hidden></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="register-footer">
+        <div class="d-flex ms-auto" style="gap:8px;">
+            @* From a requisition: back to it, where adding to stock is still the next step. *@
+            <a href="@(fromRequest is not null ? Url.RequisitionBackUrl(fromRequest.RequestId, ViewBag.ReturnTo as string) : Url.Action("Index"))" class="btn btn-outline-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary" id="saveSupply" disabled="@(!categories.Any())">Save supply</button>
+        </div>
+    </div>
+</form>
+
+@section Scripts {
+    @{
+        await Html.RenderPartialAsync("_ValidationScriptsPartial");
+    }
+    <script>
+        // "+ Add a new category": saved as a consumables category, added to
+        // the list and picked, without leaving the form.
+        (function () {
+            var save = document.getElementById('newCategorySave');
+            if (!save) return;
+            var box = document.getElementById('newCategoryName'), err = document.getElementById('newCategoryError');
+            var select = document.getElementById('supplyCategory');
+            function fail(text) { err.textContent = text; err.hidden = false; }
+            function add() {
+                err.hidden = true;
+                var name = box.value.trim();
+                if (!name) { fail('Enter a name for the category.'); box.focus(); return; }
+                var data = new FormData();
+                data.append('categoryName', name);
+                data.append('__RequestVerificationToken', document.querySelector('input[name=__RequestVerificationToken]').value);
+                save.disabled = true;
+                fetch('@Url.Action("QuickCreate", "Categories")', { method: 'POST', body: data, credentials: 'same-origin' })
+                    .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, b: b }; }); })
+                    .then(function (x) {
+                        if (!x.ok || !x.b || x.b.error) { fail((x.b && x.b.error) || 'Could not add the category.'); return; }
+                        var opt = Array.from(select.options).find(function (o) { return o.value === String(x.b.id); });
+                        if (!opt) { opt = new Option(x.b.name, x.b.id); select.add(opt); }
+                        select.value = String(x.b.id);
+                        select.dispatchEvent(new Event('change', { bubbles: true }));
+                        box.value = '';
+                        bootstrap.Collapse.getOrCreateInstance(document.getElementById('newCategory'), { toggle: false }).hide();
+                        var saveBtn = document.getElementById('saveSupply');
+                        if (saveBtn) saveBtn.disabled = false;
+                    })
+                    .catch(function () { fail('No reply. Check the connection and try again.'); })
+                    .finally(function () { save.disabled = false; });
+            }
+            save.addEventListener('click', add);
+            box.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+            document.getElementById('newCategory').addEventListener('shown.bs.collapse', function () { box.focus(); });
+        })();
+
+        // The preview card follows what is typed.
+        (function () {
+            var el = function (id) { return document.getElementById(id); };
+            var name = el('supplyName'), unit = el('supplyUnit'), qty = el('supplyQty'),
+                low = el('supplyLow'), price = el('supplyPrice'), where = null;
+
+            // Same rule as SupplyText.Unit: 1 box, 6 boxes, 42 reams.
+            function plural(u, q) {
+                if (q === 1) return u;
+                var l = u.toLowerCase();
+                if (/s$/.test(l) && !/ss$/.test(l)) return u;
+                if (/(x|ch|sh|ss)$/.test(l)) return u + 'es';
+                return u + 's';
+            }
+            function sync() {
+                var q = Math.max(0, parseInt(qty.value, 10) || 0);
+                var l = Math.max(0, parseInt(low.value, 10) || 0);
+                var u = (unit.value || '').trim();
+                el('pvName').textContent = (name.value || '').trim() || 'New supply';
+                el('pvQty').textContent = q + (u ? ' ' + plural(u, q) : '');
+                var status = el('pvStatus');
+                var out = q <= 0, running = !out && l > 0 && q <= l;
+                status.textContent = out ? 'Out of stock' : running ? 'Running low' : 'In stock';
+                status.className = 'asset-pill asset-status ' + (out ? 'st-overdue' : running ? 'st-low' : 'st-available');
+                el('pvWhere').textContent = 'Kept in ' + el('keptIn').textContent.trim();
+                var p = parseFloat(price.value);
+                var value = el('pvValue');
+                if (!isNaN(p) && p > 0 && q > 0) {
+                    value.hidden = false;
+                    value.textContent = 'Stock value \u20B1 ' + (p * q).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                } else {
+                    value.hidden = true;
+                }
+            }
+            [name, unit, qty, low, price].forEach(function (i) {
+                i.addEventListener('input', sync);
+                i.addEventListener('change', sync);
+            });
+            sync();
+        })();
+    </script>
+}

@@ -1,0 +1,10 @@
+@model int
+@* Property and Supplies: what Purchasing ordered, waiting to be received
+   (NewItemRequests/Incoming). The number is how many are on their way. *@
+<a asp-controller="NewItemRequests" asp-action="Incoming" class="btn @(Model > 0 ? "btn-outline-primary incoming-btn has-some" : "btn-outline-secondary incoming-btn")">
+    <span>Incoming deliveries</span>
+    @if (Model > 0)
+    {
+        <span class="incoming-btn-count">@Model</span>
+    }
+</a>

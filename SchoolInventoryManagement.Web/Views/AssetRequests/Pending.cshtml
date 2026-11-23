@@ -1,0 +1,733 @@
+﻿@model List<SchoolInventoryManagement.BLL.DTOs.AssetRequestResponseDTO>
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.DAL.Constants
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@using SchoolInventoryManagement.Web.ViewModels
+@{
+    ViewData["Title"] = "Borrowed";
+    // What this page shows, for the live updates (_Layout, site.js).
+    ViewData["LiveScope"] = "approvals";
+
+    // Approved requests still out: In Transit or Assigned, until returned.
+    // Explicit types: ViewBag is dynamic, and a var here would stay dynamic,
+    // which breaks the lambdas and "out var" lookups below.
+    List<AssetRequestResponseDTO> inProgress = (ViewBag.InProgress as List<AssetRequestResponseDTO>) ?? new List<AssetRequestResponseDTO>();
+    Dictionary<int, string> categories = (ViewBag.ModelCategories as Dictionary<int, string>) ?? new Dictionary<int, string>();
+    Dictionary<int, ModelStock> stock = (ViewBag.Stock as Dictionary<int, ModelStock>) ?? new Dictionary<int, ModelStock>();
+    Dictionary<int, string> deptBranches = (ViewBag.DepartmentBranches as Dictionary<int, string>) ?? new Dictionary<int, string>();
+    // The requisitions buying what borrows are short of (AssetRequestsController.Pending).
+    Dictionary<int, NewItemRequestResponseDTO> purchases = (ViewBag.Purchases as Dictionary<int, NewItemRequestResponseDTO>) ?? new Dictionary<int, NewItemRequestResponseDTO>();
+    string BranchOf(AssetRequestResponseDTO r) => deptBranches.TryGetValue(r.DepartmentID, out var b) ? b : "";
+
+    // Only Property Officers and Administrators reach this page (borrow and
+    // transfer requests are the Property Department's).
+    var canManageAssets = User.IsInRole(RoleNames.AssetOfficer) || User.IsInRole(RoleNames.Administrator);
+
+    var now = PhilippineTime.Now;
+    var today = PhilippineTime.Today;
+    bool IsOverdue(AssetRequestResponseDTO r) =>
+        r.RequestStatus == RequestStatus.Assigned && r.ReturnBy is not null && r.ReturnBy.Value < now;
+
+    // Handed over, until the requester confirms receipt. Nothing can be
+    // returned before that.
+    bool AwaitsConfirm(AssetRequestResponseDTO r) =>
+        r.RequestStatus == RequestStatus.Assigned && (r.IsPermanent || r.AcknowledgedAt is null);
+
+    var overdue = inProgress.Where(r => IsOverdue(r) && !AwaitsConfirm(r)).OrderBy(r => r.ReturnBy).ToList();
+    var transit = inProgress.Where(r => r.RequestStatus == RequestStatus.InTransit).ToList();
+    var confirming = inProgress.Where(AwaitsConfirm).ToList();
+    var outNow = inProgress.Where(r => r.RequestStatus != RequestStatus.InTransit && !IsOverdue(r) && !AwaitsConfirm(r))
+        .OrderBy(r => r.ReturnBy ?? DateTime.MaxValue).ToList();
+    // The tabs split the approved requests: In progress is what still has to
+    // be picked up, delivered or confirmed; Waiting to be returned is what
+    // is out.
+    var progressList = transit.Concat(confirming).ToList();
+    var transitGroups = new[]
+    {
+        (Key: "transit", Label: "Ready for pickup or delivery", Items: transit),
+        (Key: "confirm", Label: "Handed over, waiting for the requester to confirm", Items: confirming)
+    };
+    var returnList = overdue.Concat(outNow).ToList();
+    var returnGroups = new[]
+    {
+        (Key: "late", Label: "Overdue", Items: overdue),
+        (Key: "use", Label: "Out now", Items: outNow)
+    };
+}
+
+@functions {
+    static string Initials(string name)
+    {
+        var initials = string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(p => p[0])).ToUpperInvariant();
+        return initials.Length > 2 ? initials[..2] : initials;
+    }
+
+    static string Days(int n) => n == 1 ? "1 day" : $"{n} days";
+
+    // "→ Library" for a transfer; nothing for a borrow.
+    static string Where(AssetRequestResponseDTO r) =>
+        r.RequestType == RequestType.Transfer && r.RequestedLocationName != null ? " → " + r.RequestedLocationName : "";
+
+    static string Search(AssetRequestResponseDTO r) =>
+        string.Join(" ", new[] { "#" + r.RequestID, r.RequestID.ToString(), r.RequestedByUser.FullName, r.DepartmentName,
+            r.ItemsSummary, r.RequestedLocationName ?? "", r.RequestType.ToString() }
+            .Concat(r.Units.Select(u => u.AssetCode))).ToLowerInvariant();
+
+    // Short due note for the In progress list.
+    static string DueNote(DateTime? due, DateTime today)
+    {
+        if (due is null) return "no due date";
+        var d = (due.Value.Date - today).Days;
+        return d < 0 ? $"{Days(-d)} late" : d == 0 ? "today" : d == 1 ? "tomorrow" : $"in {d} days";
+    }
+}
+
+@if (TempData["ErrorMessage"] != null)
+{
+    <div class="alert alert-danger">@TempData["ErrorMessage"]</div>
+}
+
+
+<div class="asset-detail-head mb-3 pb-0 border-0">
+    <div>
+        <h2 class="asset-detail-title">Borrowed</h2>
+        <div class="asset-detail-sub">@Model.Count borrow@(Model.Count == 1 ? "" : "s") awaiting a decision from you, then handing over and returns.</div>
+    </div>
+    @if (canManageAssets)
+    {
+        <div class="asset-detail-actions">
+            <a asp-action="History" class="btn btn-outline-secondary">Borrowing history</a>
+        </div>
+    }
+</div>
+
+
+@{
+    // ?tab=progress / ?tab=return (after Picked up / Delivered or a recorded
+    // return) opens that tab; otherwise Waiting for approval.
+    var openTab = (ViewBag.Tab as string) switch
+    {
+        "progress" => "tabProgress",
+        "return" => "tabReturn",
+        _ => "tabAwaiting"
+    };
+}
+<div class="page-tabs" role="tablist">
+    <button type="button" class="@(openTab == "tabAwaiting" ? "active" : "")" role="tab" aria-selected="@(openTab == "tabAwaiting" ? "true" : "false")" data-md-tab="tabAwaiting">
+        Waiting for approval <span class="history-tab-count">@Model.Count</span>
+    </button>
+    <button type="button" class="@(openTab == "tabProgress" ? "active" : "")" role="tab" aria-selected="@(openTab == "tabProgress" ? "true" : "false")" data-md-tab="tabProgress">
+        In progress <span class="history-tab-count">@progressList.Count</span>
+    </button>
+    <button type="button" class="@(openTab == "tabReturn" ? "active" : "")" role="tab" aria-selected="@(openTab == "tabReturn" ? "true" : "false")" data-md-tab="tabReturn">
+        Waiting to be returned <span class="history-tab-count">@returnList.Count</span>
+    </button>
+</div>
+
+@* ---- Waiting for approval ------------------------------------------- *@
+<section id="tabAwaiting" role="tabpanel" hidden="@(openTab != "tabAwaiting")">
+    @if (!Model.Any())
+    {
+        <div class="sab-table-card">
+            <div class="sab-empty">
+                <div class="sab-empty-title">Nothing is waiting on you</div>
+                <p>Requests appear here as soon as somebody submits one.</p>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="sab-table-card myassets" data-md data-page-size="6">
+            <aside class="myassets-list" aria-label="Requests awaiting a decision">
+                <div class="md-toolbar">
+                    <label class="asset-search">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                        <input type="text" data-md-search autocomplete="off" placeholder="Search requests..." aria-label="Search requests" />
+                    </label>
+                    <div class="dropdown">
+                        <button type="button" class="asset-tool-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z" /></svg>
+                            Filters
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end md-filter-menu">
+                            <label class="form-label">Branch</label>
+                            <div class="mb-2">
+                            <select class="form-select form-select-sm" data-md-filter="branch" data-combobox>
+                                <option value="">Any</option>
+                                @foreach (var d in Model.Select(BranchOf).Where(d => !string.IsNullOrEmpty(d)).Distinct().OrderBy(d => d))
+                                {
+                                    <option value="@d.ToLowerInvariant()">@d</option>
+                                }
+                            </select>
+                            </div>
+                            <label class="form-label">Department</label>
+                            <select class="form-select form-select-sm" data-md-filter="dept" data-combobox>
+                                <option value="">Any</option>
+                                @foreach (var d in Model.Select(r => r.DepartmentName).Where(d => !string.IsNullOrEmpty(d)).Distinct().OrderBy(d => d))
+                                {
+                                    <option value="@d.ToLowerInvariant()">@d</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="myassets-group" data-md-group>
+                    <div class="myassets-group-label group-late">Oldest first · <span data-md-count>@Model.Count</span></div>
+                    @foreach (var r in Model)
+                    {
+                        var waited = (today - r.RequestDate.Date).Days;
+                        <button type="button" class="myassets-item" data-entry="a-@r.RequestID" data-search="@Search(r)"
+                                data-type="@r.RequestType.ToString().ToLowerInvariant()"
+                                data-dept="@(r.DepartmentName?.ToLowerInvariant() ?? "")" data-branch="@BranchOf(r).ToLowerInvariant()">
+                            <span class="md-avatar">@Initials(r.RequestedByUser.FullName)</span>
+                            <span class="myassets-item-main">
+                                <span class="myassets-item-title">@r.RequestedByUser.FullName</span>
+                                <span class="myassets-item-sub">@(r.ItemsSummary + Where(r))</span>
+                                <span class="md-tags">
+                                    <span class="md-tag @(r.RequestType == RequestType.Transfer ? "is-transfer" : "")">@r.RequestType</span>
+                                    @r.DepartmentName
+                                </span>
+                            </span>
+                            <span class="md-age @(waited >= 2 ? "is-late" : "")">@(waited == 0 ? "today" : Days(waited))</span>
+                        </button>
+                    }
+                </div>
+                <div class="myassets-nomatch" data-md-empty hidden>Nothing matches your search.</div>
+
+                <div class="md-foot">
+                    <span data-md-range></span>
+                    <div data-md-pager></div>
+                </div>
+            </aside>
+
+            <section class="myassets-detail">
+                @foreach (var r in Model)
+                {
+                    var waited = (today - r.RequestDate.Date).Days;
+                    var isBorrow = r.RequestType == RequestType.Borrow;
+                    // The same role cannot decide it (the service refuses too).
+                    var sameRole = User.IsInRole(r.RequestedByUser.RoleName);
+                    var freeForRequest = r.Items.Sum(i => stock.TryGetValue(i.ModelID, out var s) ? s.Total : 0);
+
+                    <article class="myassets-panel" data-panel="a-@r.RequestID" hidden>
+                        <button type="button" class="myassets-back" data-back>&larr; All requests</button>
+
+                        <div class="myassets-panel-head">
+                            <div class="md-person">
+                                <span class="md-avatar md-avatar-lg">@Initials(r.RequestedByUser.FullName)</span>
+                                <div class="min-w-0">
+                                    <div class="myassets-panel-meta">
+                                        <span class="md-tag @(isBorrow ? "" : "is-transfer")">@r.RequestType</span>
+                                        <span>Request #@r.RequestID · submitted @r.RequestDate.ToString("MMM d, h:mm tt")</span>
+                                    </div>
+                                    <h3 class="md-person-name">@r.RequestedByUser.FullName <small>· @r.RequestedByUser.RoleName · @r.DepartmentName</small></h3>
+                                </div>
+                            </div>
+                            <div class="myassets-panel-actions">
+                                <span class="md-wait @(waited >= 2 ? "" : "is-calm")">Waiting @(waited == 0 ? "since today" : Days(waited))</span>
+                                <a asp-action="Details" asp-route-id="@r.RequestID" asp-route-from="approvals" class="btn btn-outline-secondary">View &rarr;</a>
+                            </div>
+                        </div>
+
+                        @{
+                            var waitSteps = new List<RequestStep>
+                            {
+                                new("Submitted", r.RequestDate.ToString("MMM d"), RequestStepState.Done),
+                                new("Approved", "waiting", RequestStepState.Current),
+                                new(isBorrow ? "Picked up" : "Delivered", null, RequestStepState.Todo),
+                                new("Returned", r.ReturnBy is not null ? "due " + r.ReturnBy.Value.ToString("MMM d") : null, RequestStepState.Todo)
+                            };
+                        }
+                        <partial name="_RequestSteps" model="waitSteps" />
+
+                        <div class="myassets-stats">
+                            <div><span>@(isBorrow ? "Pickup at" : "Move to")</span><strong>@DisplayText.Or(r.RequestedLocationName, "Staff will choose")</strong></div>
+                            <div>
+                                <span>Needed</span>
+                                <strong>@DisplayText.Or(r.NeededFrom?.ToString("MMM d"), "Not given")@(r.ReturnBy is not null ? " → " + r.ReturnBy.Value.ToString("MMM d") : "")</strong>
+                            </div>
+                            <div><span>Units</span><strong>@r.TotalQuantity</strong></div>
+                            <div><span>Available now</span><strong class="@(freeForRequest >= r.TotalQuantity ? "text-success" : "text-danger")">@freeForRequest in stock</strong></div>
+                        </div>
+
+                        <h4 class="md-section-title">What they're asking for</h4>
+                        <div class="req-items">
+                            @foreach (var item in r.Items)
+                            {
+                                stock.TryGetValue(item.ModelID, out var s);
+                                var free = s?.Total ?? 0;
+                                var atPickup = s != null && r.RequestedLocationName != null && s.ByLocation.TryGetValue(r.RequestedLocationName, out var here) ? here : 0;
+                                <div class="req-item">
+                                    <span class="req-item-icon" aria-hidden="true">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7z" /><path d="m3 7 9 5 9-5M12 12v10" /></svg>
+                                    </span>
+                                    <div class="min-w-0">
+                                        <div class="req-item-name">@item.ModelName</div>
+                                        <div class="req-item-meta @(free < item.Quantity ? "is-short" : "")">
+                                            @(categories.TryGetValue(item.ModelID, out var cat) ? cat + " · " : "")@free available@(isBorrow && r.RequestedLocationName != null ? $", {atPickup} at the {r.RequestedLocationName}" : "")
+                                        </div>
+                                    </div>
+                                    <span class="req-item-qty">×@item.Quantity</span>
+                                </div>
+                            }
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(r.Reason))
+                        {
+                            <div class="req-note"><strong>Reason:</strong> @r.Reason</div>
+                        }
+
+                        @if (sameRole)
+                        {
+                            <div class="sab-callout sab-callout-warn mt-3">
+                                <span class="sab-callout-label">Not yours to decide</span>
+                                This request is from someone with your own role, so it has to go to an approver of a different role.
+                            </div>
+                        }
+                        else
+                        {
+                            @if (r.BeingBought && purchases.TryGetValue(r.PurchaseRequestID!.Value, out var buy))
+                            {
+                                @* Short of stock (Scripts/032): what is bought for it is
+                                   received here too, then put in stock; then it can be approved. *@
+                                await BuyingSteps(r, buy);
+                            }
+                            <div class="req-action">
+                                <div>
+                                    <div class="req-action-title">Your decision</div>
+                                    <div class="req-action-note">@(r.BeingBought ? "Approve once what is being bought is in stock; rejecting asks for a reason." : "Approving takes you to pick the units; rejecting asks for a reason.")</div>
+                                </div>
+                                <div class="req-action-buttons">
+                                    @if (r.BeingBought)
+                                    {
+                                        <button type="button" class="btn btn-outline-secondary" disabled title="Approve once the @r.ToBuy being bought are in stock">Approve &amp; pick units &rarr;</button>
+                                    }
+                                    else
+                                    {
+                                        <a asp-action="Approve" asp-route-id="@r.RequestID" class="btn btn-primary">Approve &amp; pick units &rarr;</a>
+                                    }
+                                    <button type="button" class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#reject-@r.RequestID">Reject</button>
+                                </div>
+                            </div>
+                        }
+                    </article>
+                }
+            </section>
+        </div>
+    }
+</section>
+
+@* Reject confirmations for the requests above, outside the list so a
+   hidden panel cannot hide them. *@
+@foreach (var r in Model)
+{
+    <partial name="_RejectRequestModal" model="r" />
+}
+
+@{
+    // A borrow short of stock: the requisition buying the rest, with its
+    // receiving steps on the borrow's own panel. Every step comes back here
+    // (returnTo = borrow-N): Received from supplier, Register the bought
+    // units, Put in stock; then the borrow can be approved.
+    async Task BuyingSteps(AssetRequestResponseDTO r, NewItemRequestResponseDTO buy)
+    {
+        var back = BorrowReturn.For(r.RequestID);
+        var todo = NewItemProgress.StillToDo(buy);
+        var bought = buy.Items.Sum(i => i.ToBuy);
+        var suppliers = string.Join(", ", buy.PurchaseOrders.Select(p => p.SupplierName).Distinct());
+        var steps = new[] { "Ordering", "Waiting for the supplier", "Register units", "Put in stock" };
+        var current = buy.RequestStatus switch
+        {
+            NewItemStatus.AwaitingArrival => 1,
+            NewItemStatus.Arrived => todo.Register > 0 ? 2 : 3,
+            _ => 0
+        };
+        <div class="req-action bw-buying">
+            <div class="min-w-0">
+                <div class="req-action-title">
+                    Being bought for this borrow:
+                    <a asp-controller="NewItemRequests" asp-action="Details" asp-route-id="@buy.NewItemRequestID">requisition #@buy.NewItemRequestID</a>
+                </div>
+                <ol class="ni-stagechips my-2" aria-label="Buying steps">
+                    @for (var i = 0; i < steps.Length; i++)
+                    {
+                        <li class="@(i < current ? "is-done" : i == current ? "is-current" : "")">@(i + 1) · @steps[i]</li>
+                    }
+                </ol>
+                <div class="req-action-note">
+                    @bought unit@(bought == 1 ? "" : "s") of @string.Join(", ", buy.Items.Where(i => i.ToBuy > 0).Select(i => i.ItemName))@(suppliers.Length > 0 ? " from " + suppliers : "").
+                    @switch (current)
+                    {
+                        case 0: <text>Purchasing is ordering it.</text> break;
+                        case 1: <text>Mark it received when the supplier delivers.</text> break;
+                        case 2: <text>Received. Register the @todo.Register bought unit@(todo.Register == 1 ? "" : "s").</text> break;
+                        default: <text>Registered. Put the units in stock, then approve the borrow.</text> break;
+                    }
+                </div>
+                @foreach (var po in buy.PurchaseOrders)
+                {
+                    <a asp-controller="Purchasing" asp-action="Order" asp-route-id="@po.PurchaseOrderID" class="asset-code-chip d-inline-block mt-2 me-1" title="View purchase order">@po.PONumber</a>
+                }
+            </div>
+            <div class="req-action-buttons">
+                @if (!buy.CanAct)
+                {
+                    <span class="text-muted">Waiting on @NewItemProgress.WaitingOn(buy.RequestStatus)</span>
+                }
+                else if (current == 1)
+                {
+                    <form asp-controller="NewItemRequests" asp-action="Advance" asp-route-id="@buy.NewItemRequestID" asp-route-returnTo="@back" method="post"
+                          onsubmit="return confirm('Mark requisition #@buy.NewItemRequestID as received from the supplier? Next you register the units.');">
+                        @Html.AntiForgeryToken()
+                        <input type="hidden" name="rowVersionBase64" value="@RowVersionHelper.ToBase64(buy.RowVersion)" />
+                        <button type="submit" class="btn btn-primary">&#10003; Received from supplier</button>
+                    </form>
+                }
+                else if (current == 2)
+                {
+                    <a asp-controller="Assets" asp-action="BulkCreate" asp-route-newItemRequestId="@buy.NewItemRequestID" asp-route-returnTo="@back" class="btn btn-primary">@NewItemProgress.RegisterLabel(buy) &rarr;</a>
+                }
+                else if (current == 3 && todo.Pick == 0)
+                {
+                    <form asp-controller="NewItemRequests" asp-action="Advance" asp-route-id="@buy.NewItemRequestID" asp-route-returnTo="@back" method="post">
+                        @Html.AntiForgeryToken()
+                        <input type="hidden" name="rowVersionBase64" value="@RowVersionHelper.ToBase64(buy.RowVersion)" />
+                        <button type="submit" class="btn btn-primary">&#10003; Put in stock</button>
+                    </form>
+                }
+                else if (current == 3)
+                {
+                    <a href="@Url.Action("Pending", "NewItemRequests", new { open = buy.NewItemRequestID })#n-@buy.NewItemRequestID" class="btn btn-outline-secondary">Open requisition &rarr;</a>
+                }
+            </div>
+        </div>
+    }
+}
+
+@{
+    // One approved-requests list with its panels, shared by the In progress
+    // tab (still to be picked up or delivered) and the Waiting to be
+    // returned tab. returns = the second: Timing instead of Stage in the
+    // filters. Async because the tag helpers inside render with await.
+    async Task ProgressList(List<AssetRequestResponseDTO> list,
+        (string Key, string Label, List<AssetRequestResponseDTO> Items)[] groups,
+        string prefix, string aria, bool returns)
+    {
+        <div class="sab-table-card myassets" data-md data-page-size="6">
+            <aside class="myassets-list" aria-label="@aria">
+                <div class="md-toolbar">
+                    <label class="asset-search">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                        <input type="text" data-md-search autocomplete="off" placeholder="Ticket #, name or item..." aria-label="Search by ticket number, name or item" />
+                    </label>
+                    <div class="dropdown">
+                        <button type="button" class="asset-tool-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z" /></svg>
+                            Filters
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end md-filter-menu">
+                            @if (!returns)
+                            {
+                                <label class="form-label">Stage</label>
+                                <select class="form-select form-select-sm mb-2" data-md-filter="stage">
+                                    <option value="">Any</option>
+                                    <option value="transit">Waiting to be picked up</option>
+                                    <option value="confirm">Waiting for the borrower to confirm</option>
+                                </select>
+                            }
+                            else
+                            {
+                                <label class="form-label">Timing</label>
+                                <select class="form-select form-select-sm mb-2" data-md-filter="timing">
+                                    <option value="">Any</option>
+                                    <option value="ontime">On time</option>
+                                    <option value="overdue">Overdue</option>
+                                </select>
+                            }
+                            <label class="form-label">Branch</label>
+                            <div class="mb-2">
+                            <select class="form-select form-select-sm" data-md-filter="branch" data-combobox>
+                                <option value="">Any</option>
+                                @foreach (var d in list.Select(BranchOf).Where(d => !string.IsNullOrEmpty(d)).Distinct().OrderBy(d => d))
+                                {
+                                    <option value="@d.ToLowerInvariant()">@d</option>
+                                }
+                            </select>
+                            </div>
+                            <label class="form-label">Department</label>
+                            <select class="form-select form-select-sm" data-md-filter="dept" data-combobox>
+                                <option value="">Any</option>
+                                @foreach (var d in list.Select(r => r.DepartmentName).Where(d => !string.IsNullOrEmpty(d)).Distinct().OrderBy(d => d))
+                                {
+                                    <option value="@d.ToLowerInvariant()">@d</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                @foreach (var g in groups.Where(g => g.Items.Any()))
+                {
+                    <div class="myassets-group" data-md-group>
+                        <div class="myassets-group-label group-@g.Key">@g.Label · <span data-md-count>@g.Items.Count</span></div>
+                        @foreach (var r in g.Items)
+                        {
+                            var isBorrow = r.RequestType == RequestType.Borrow;
+                            var late = g.Key == "late";
+                            <button type="button" class="myassets-item" data-entry="@prefix-@r.RequestID" data-search="@Search(r)"
+                                    data-type="@r.RequestType.ToString().ToLowerInvariant()" data-dept="@(r.DepartmentName?.ToLowerInvariant() ?? "")" data-branch="@BranchOf(r).ToLowerInvariant()"
+                                    data-stage="@g.Key" data-timing="@(late ? "overdue" : "ontime")">
+                                <span class="md-avatar @(late ? "is-dark" : "")">@Initials(r.RequestedByUser.FullName)</span>
+                                <span class="myassets-item-main">
+                                    <span class="myassets-item-title">@r.RequestedByUser.FullName</span>
+                                    <span class="myassets-item-sub">@(r.ItemsSummary + Where(r)) · @r.Units.Count unit@(r.Units.Count == 1 ? "" : "s")</span>
+                                    <span class="md-tags">
+                                        <span class="md-tag @(isBorrow ? "" : "is-transfer")">@r.RequestType</span>
+                                        @if (g.Key == "transit")
+                                        {
+                                            @(isBorrow ? "pick up at " + (r.PickupLocationName ?? "the pickup point") : "to " + (r.RequestedLocationName ?? "the destination"))
+                                        }
+                                        else if (g.Key == "confirm")
+                                        {
+                                            @(isBorrow ? "picked up, not confirmed yet" : "delivered to " + (r.RequestedLocationName ?? "the destination"))
+                                        }
+                                        else
+                                        {
+                                            @(r.ReturnBy is not null ? "due " + r.ReturnBy.Value.ToString("MMM d") : "no due date")
+                                        }
+                                    </span>
+                                </span>
+                                <span class="md-age @(late ? "is-late" : g.Key == "transit" ? "is-transit" : "is-soon")">
+                                    @(g.Key == "transit" ? DisplayText.InTransitLabel(r.RequestType) : g.Key == "confirm" ? "to confirm" : DueNote(r.ReturnBy, today))
+                                </span>
+                            </button>
+                        }
+                    </div>
+                }
+                <div class="myassets-nomatch" data-md-empty hidden>Nothing matches your search.</div>
+
+                <div class="md-foot">
+                    <span data-md-range></span>
+                    <div data-md-pager></div>
+                </div>
+            </aside>
+
+            <section class="myassets-detail">
+                @foreach (var r in list)
+                {
+                    var isBorrow = r.RequestType == RequestType.Borrow;
+                    var late = IsOverdue(r);
+                    var inTransit = r.RequestStatus == RequestStatus.InTransit;
+                    var toConfirm = AwaitsConfirm(r);
+                    var daysLate = late ? (today - r.ReturnBy!.Value.Date).Days : 0;
+                    var unitsOverdue = r.Units.Count(u => u.AssetStatus == AssetStatus.Overdue);
+                    var steps = new List<RequestStep>
+                    {
+                        new("Submitted", r.RequestDate.ToString("MMM d"), RequestStepState.Done),
+                        new("Approved", r.ApprovalDate?.ToString("MMM d"), RequestStepState.Done),
+                        new(isBorrow ? "Picked up" : "Delivered",
+                            inTransit ? (isBorrow ? "at " + (r.PickupLocationName ?? "the pickup point") : "to " + (r.RequestedLocationName ?? "the destination")) : r.AssignedDate?.ToString("MMM d"),
+                            inTransit ? RequestStepState.Current : RequestStepState.Done),
+                        r.IsPermanent
+                            ? new RequestStep("Receipt confirmed", "by the requester",
+                                inTransit ? RequestStepState.Todo : RequestStepState.Current)
+                            : new RequestStep("Returned", r.ReturnBy is not null ? "due " + r.ReturnBy.Value.ToString("MMM d") : null,
+                                late ? RequestStepState.Late : inTransit ? RequestStepState.Todo : RequestStepState.Current)
+                    };
+
+                    <article class="myassets-panel" data-panel="@prefix-@r.RequestID" hidden>
+                        <button type="button" class="myassets-back" data-back>&larr; All requests</button>
+
+                        <div class="myassets-panel-head">
+                            <div class="md-person">
+                                <span class="md-avatar md-avatar-lg @(late ? "is-dark" : "")">@Initials(r.RequestedByUser.FullName)</span>
+                                <div class="min-w-0">
+                                    <div class="myassets-panel-meta">
+                                        <span class="md-tag @(isBorrow ? "" : "is-transfer")">@r.RequestType</span>
+                                        <span>Request #@r.RequestID · submitted @r.RequestDate.ToString("MMM d, h:mm tt")</span>
+                                    </div>
+                                    <h3 class="md-person-name">@r.RequestedByUser.FullName <small>· @r.RequestedByUser.RoleName · @r.DepartmentName</small></h3>
+                                </div>
+                            </div>
+                            <div class="myassets-panel-actions">
+                                @if (late)
+                                {
+                                    <span class="asset-pill asset-status st-overdue">@(unitsOverdue > 0 ? unitsOverdue + " overdue" : "Overdue")</span>
+                                }
+                                else if (inTransit)
+                                {
+                                    <span class="asset-pill asset-status st-intransit">@DisplayText.InTransitLabel(r.RequestType)</span>
+                                }
+                                else if (toConfirm)
+                                {
+                                    <span class="asset-pill asset-status st-intransit">To confirm</span>
+                                }
+                                else
+                                {
+                                    <span class="asset-pill asset-status st-assigned">Out</span>
+                                }
+                                <a asp-action="Details" asp-route-id="@r.RequestID" asp-route-from="approvals" class="btn btn-outline-secondary">View &rarr;</a>
+                            </div>
+                        </div>
+
+                        <partial name="_RequestSteps" model="steps" />
+
+                        <div class="myassets-stats">
+                            <div>
+                                <span>Where</span>
+                                <strong>
+                                    @if (isBorrow)
+                                    {
+                                        @(inTransit ? "Pick up at " + (r.PickupLocationName ?? "the pickup point") : "With requester")
+                                    }
+                                    else
+                                    {
+                                        @("→ " + (r.RequestedLocationName ?? "the destination"))
+                                    }
+                                </strong>
+                            </div>
+                            <div class="@(late ? "is-late" : "")">
+                                <span>Due back</span>
+                                <strong>@DisplayText.Or(r.ReturnBy?.ToString("MMM d"), "No date · permanent")@(late ? $" · {Days(daysLate)} late" : "")</strong>
+                            </div>
+                            <div><span>Units out</span><strong>@r.UnitsOut of @r.Units.Count</strong></div>
+                            <div><span>Approved by</span><strong>@DisplayText.Or(r.ApprovedByUser?.FullName, "Not recorded")</strong></div>
+                        </div>
+
+                        @if (r.Items.Count > 1)
+                        {
+                            <div class="myassets-chips">
+                                @foreach (var item in r.Items)
+                                {
+                                    <span class="myassets-chip">@item.ModelName <strong>×@item.Quantity</strong></span>
+                                }
+                            </div>
+                        }
+
+                        @if (r.Units.Any())
+                        {
+                            <h4 class="md-section-title">Units on this request</h4>
+                            <div class="myassets-units">
+                                <table class="table myassets-table">
+                                    <thead><tr><th>Code</th><th>Asset</th><th>Status</th></tr></thead>
+                                    <tbody>
+                                        @for (var i = 0; i < r.Units.Count; i++)
+                                        {
+                                            var u = r.Units[i];
+                                            <tr hidden="@(i >= 3)" data-extra="@(i >= 3 ? "true" : null)">
+                                                <td data-label="Code"><a asp-controller="Assets" asp-action="Details" asp-route-id="@u.AssetID" class="asset-code-chip">@u.AssetCode</a></td>
+                                                <td data-label="Asset">@u.AssetName</td>
+                                                <td data-label="Status">
+                                                    @if (u.ReturnDate is not null)
+                                                    {
+                                                        <span class="asset-pill asset-status st-available">Returned @u.ReturnDate.Value.ToString("MMM d")</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="asset-pill asset-status st-@u.AssetStatus.ToString().ToLowerInvariant()">@DisplayText.AssetStatusLabel(u.AssetStatus, r.RequestType)</span>
+                                                    }
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                                @if (r.Units.Count > 3)
+                                {
+                                    <button type="button" class="myassets-more" data-more>Show @(r.Units.Count - 3) more unit@(r.Units.Count - 3 == 1 ? "" : "s") &#9662;</button>
+                                }
+                            </div>
+                        }
+
+                        @if (canManageAssets)
+                        {
+                            <div class="req-action @(late ? "is-late" : "")">
+                                <div>
+                                    <div class="req-action-title">
+                                        @if (late)
+                                        {
+                                            @(Days(daysLate) + " overdue")
+                                        }
+                                        else if (inTransit)
+                                        {
+                                            @(isBorrow ? "Waiting to be picked up" : "On its way")
+                                        }
+                                        else if (toConfirm)
+                                        {
+                                            @("Waiting for " + r.RequestedByUser.FullName + " to confirm receipt")
+                                        }
+                                        else
+                                        {
+                                            @(r.ReturnBy is null ? "Kept for good" : "Due back " + r.ReturnBy.Value.ToString("MMM d"))
+                                        }
+                                    </div>
+                                    <div class="req-action-note">
+                                        @(inTransit && isBorrow ? "Set aside at the pickup room. It counts as picked up when the borrower confirms receiving it; or cancel to put the units back."
+                                            : inTransit ? "Not handed over yet: mark it done, or cancel to put the units back."
+                                            : toConfirm && isBorrow ? "Picked up. The return can be recorded once the borrower confirms they received the items."
+                                            : toConfirm ? $"Delivered for good. The items become {r.DepartmentName}'s once the requester confirms."
+                                            : "Record the return when the units come back.")
+                                    </div>
+                                </div>
+                                <div class="req-action-buttons">
+                                    @if (inTransit)
+                                    {
+                                        @* No "Picked up" for a borrow (Scripts/037): the borrower's confirmation is the pickup. *@
+                                        @if (!isBorrow)
+                                        {
+                                            <form asp-action="MarkAssigned" asp-route-id="@r.RequestID" method="post">
+                                                @Html.AntiForgeryToken()
+                                                <input type="hidden" name="rowVersionBase64" value="@Convert.ToBase64String(r.RowVersion)" />
+                                                <input type="hidden" name="fromApprovals" value="true" />
+                                                <button type="submit" class="btn btn-primary">Delivered</button>
+                                            </form>
+                                        }
+                                        <a asp-action="Cancel" asp-route-id="@r.RequestID" class="btn btn-outline-danger">Cancel</a>
+                                    }
+                                    else if (r.UnitsOut > 0 && r.AcknowledgedAt is not null)
+                                    {
+                                        <a asp-action="RecordReturn" asp-route-id="@r.RequestID" asp-route-from="approvals" class="btn btn-primary">Record return &rarr;</a>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </article>
+                }
+            </section>
+        </div>
+    }
+}
+
+@* ---- In progress: to pick up or deliver ---------------------------------- *@
+<section id="tabProgress" role="tabpanel" hidden="@(openTab != "tabProgress")">
+    @if (!progressList.Any())
+    {
+        <div class="sab-table-card">
+            <div class="sab-empty">
+                <div class="sab-empty-title">Nothing to hand over</div>
+                <p>Approved requests wait here until they are picked up or delivered.</p>
+            </div>
+        </div>
+    }
+    else
+    {
+        await ProgressList(progressList, transitGroups, "p", "Requests to pick up, deliver or confirm", false);
+    }
+</section>
+
+@* ---- Waiting to be returned ----------------------------------------------- *@
+<section id="tabReturn" role="tabpanel" hidden="@(openTab != "tabReturn")">
+    @if (!returnList.Any())
+    {
+        <div class="sab-table-card">
+            <div class="sab-empty">
+                <div class="sab-empty-title">Nothing out right now</div>
+                <p>Picked-up and delivered requests wait here until their return is recorded.</p>
+            </div>
+        </div>
+    }
+    else
+    {
+        await ProgressList(returnList, returnGroups, "r", "Requests waiting to be returned", true);
+    }
+</section>

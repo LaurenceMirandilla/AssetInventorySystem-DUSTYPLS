@@ -1,0 +1,52 @@
+﻿using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+
+namespace SchoolInventoryManagement.DAL.Entities
+{
+    public class Department
+    {
+        [Key]
+        public int DepartmentID { get; set; }
+
+        public int BranchID { get; set; }
+
+        [Required]
+        [MaxLength(100)]
+        public string DepartmentName { get; set; } = null!;
+
+        [MaxLength(255)]
+        public string? Description { get; set; }
+
+        // The Property Department of its branch (Scripts/024). It keeps
+        // every asset that is not issued to another department: that stock
+        // is the only one anyone can borrow from. One per branch; it cannot
+        // be deleted or moved to another branch.
+        public bool IsProperty { get; set; }
+
+        // Its main room (Scripts/029): where supplies and purchases for the
+        // department are delivered. One of its Rooms.
+        public int? MainLocationID { get; set; }
+        public Location? MainLocation { get; set; }
+
+        // What it can spend on purchase orders in a year, January to
+        // December (Scripts/036, made yearly by Scripts/037). Spending is
+        // counted from purchase orders dated in the year, so it starts again
+        // on January 1. New departments start at 600,000.00.
+        [Column(TypeName = "decimal(12,2)")]
+        public decimal AnnualBudget { get; set; } = 600000m;
+
+        // Upward Navigation Property
+        [ForeignKey("BranchID")]
+        public Branch Branch { get; set; } = null!;
+
+        // Downward Navigation Properties (1-to-Many relationships)
+        public ICollection<User> Users { get; set; } = new List<User>();
+        public ICollection<Asset> Assets { get; set; } = new List<Asset>();
+        public ICollection<AssetRequest> AssetRequests { get; set; } = new List<AssetRequest>();
+
+        // Its rooms (Locations.DepartmentID). Every department has at least
+        // one; a new one cannot be saved without.
+        public ICollection<Location> Rooms { get; set; } = new List<Location>();
+    }
+}

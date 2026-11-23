@@ -1,0 +1,41 @@
+@model (List<SchoolInventoryManagement.Web.Helpers.BoughtLine> Lines, int? Current)
+@* What was bought for the requisition (BoughtItems): name and description
+   as written on the purchase order, how many, the price, the order and the
+   supplier. The line being filled in (Current) is marked. *@
+@if (Model.Lines.Count > 0)
+{
+    var total = Model.Lines.Sum(l => l.Amount);
+    <div class="asset-card bought-card mb-3">
+        <div class="register-step-head">
+            <div class="register-step-title flex-grow-1">What was bought</div>
+            <span class="nr-head-note">from the purchase order@(Model.Lines.Select(l => l.PurchaseOrderID).Distinct().Count() == 1 ? "" : "s") · fill in from this</span>
+        </div>
+        <div class="table-responsive">
+            <table class="table asset-table bought-table mb-0">
+                <thead>
+                    <tr><th>Item</th><th class="text-end">Qty</th><th class="text-end">Unit price</th><th class="text-end">Amount</th><th>Order</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var l in Model.Lines)
+                    {
+                        <tr class="@(Model.Current == l.NewItemRequestItemID ? "is-current" : "")">
+                            <td>
+                                <span class="fw-semibold">@l.Name</span>
+                                @if (Model.Current == l.NewItemRequestItemID) {<span class="md-tag bought-now">this one</span>}
+                                @if (!string.IsNullOrWhiteSpace(l.Description)) {<small class="d-block text-muted">@l.Description</small>}
+                            </td>
+                            <td class="text-end text-nowrap">@l.Quantity@(string.IsNullOrWhiteSpace(l.Unit) ? "" : " " + SupplyText.Unit(l.Quantity, l.Unit))</td>
+                            <td class="text-end text-nowrap">₱@l.UnitPrice.ToString("N2")</td>
+                            <td class="text-end text-nowrap">₱@l.Amount.ToString("N2")</td>
+                            <td class="text-nowrap"><span class="asset-code-chip">@l.PONumber</span><small class="d-block text-muted">@l.SupplierName · @l.OrderDate.ToString("MMM d")</small></td>
+                        </tr>
+                    }
+                </tbody>
+                @if (Model.Lines.Count > 1)
+                {
+                    <tfoot><tr><td colspan="3" class="text-end fw-semibold">Items total</td><td class="text-end fw-semibold">₱@total.ToString("N2")</td><td></td></tr></tfoot>
+                }
+            </table>
+        </div>
+    </div>
+}

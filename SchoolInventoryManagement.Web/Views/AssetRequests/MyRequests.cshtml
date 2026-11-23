@@ -1,0 +1,359 @@
+﻿@model List<SchoolInventoryManagement.BLL.DTOs.AssetRequestResponseDTO>
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@using SchoolInventoryManagement.Web.ViewModels
+@{
+    ViewData["Title"] = "My Borrows";
+    // What this page shows, for the live updates (_Layout, site.js).
+    ViewData["LiveScope"] = "mine";
+    // Explicit type: a var from ViewBag would stay dynamic and break the
+    // "out var" lookups below.
+    Dictionary<int, string> categories = (ViewBag.ModelCategories as Dictionary<int, string>) ?? new Dictionary<int, string>();
+    var now = PhilippineTime.Now;
+    var today = PhilippineTime.Today;
+
+    bool IsLate(AssetRequestResponseDTO r) =>
+        r.RequestStatus == RequestStatus.Assigned && r.ReturnBy is not null && r.ReturnBy.Value < now;
+
+    // Borrowing: on its way to you (being bought first, waiting for the
+    // Property Department, ready to receive). Returning: with you, to give
+    // back. Finished ones are on History.
+    var groups = new[]
+    {
+        (Key: "buying", Tab: "borrowing", Label: "Being bought first", Items: Model.Where(r => r.RequestStatus == RequestStatus.Pending && r.BeingBought).ToList()),
+        (Key: "late", Tab: "borrowing", Label: "Waiting for the Property Department", Items: Model.Where(r => r.RequestStatus == RequestStatus.Pending && !r.BeingBought).ToList()),
+        (Key: "transit", Tab: "borrowing", Label: "Ready to receive", Items: Model.Where(r => r.RequestStatus == RequestStatus.InTransit).ToList()),
+        (Key: "use", Tab: "returning", Label: "With you, to return", Items: Model.Where(r => r.RequestStatus == RequestStatus.Assigned).OrderBy(r => r.ReturnBy ?? DateTime.MaxValue).ToList())
+    };
+    var ordered = groups.SelectMany(g => g.Items).ToList();
+    int TabCount(string tab) => groups.Where(g => g.Tab == tab).Sum(g => g.Items.Count);
+    var startTab = TabCount("borrowing") > 0 || TabCount("returning") == 0 ? "borrowing" : "returning";
+}
+
+@functions {
+    static string Days(int n) => n == 1 ? "1 day" : $"{n} days";
+
+    static string Title(AssetRequestResponseDTO r) =>
+        r.ItemsSummary + (r.RequestType == RequestType.Transfer && r.RequestedLocationName != null ? " → " + r.RequestedLocationName : "");
+
+    static string When(AssetRequestResponseDTO r) =>
+        r.NeededFrom is null ? "No dates given" : r.NeededFrom.Value.ToString("MMM d") + (r.ReturnBy is not null ? " – " + r.ReturnBy.Value.ToString("MMM d") : "");
+
+    static string Status(RequestStatus s, RequestType type) => s switch
+    {
+        RequestStatus.InTransit => DisplayText.InTransitLabel(type),
+        RequestStatus.Assigned => "With you",
+        _ => DisplayText.Humanize(s.ToString())
+    };
+}
+
+@if (TempData["ErrorMessage"] != null)
+{
+    <div class="alert alert-danger">@TempData["ErrorMessage"]</div>
+}
+
+<div class="asset-detail-head mb-3 pb-0 border-0">
+    <div>
+        <h2 class="asset-detail-title">My Borrows</h2>
+        <div class="asset-detail-sub">Your borrows and returns. Items come from the Property Department's stock; you can cancel a borrow while it is still pending.</div>
+    </div>
+    <div class="asset-detail-actions">
+        <a asp-action="History" asp-route-mine="true" class="btn btn-outline-secondary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l3 2" /></svg>
+            History
+        </a>
+        <a asp-action="Create" class="btn btn-primary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            New Borrow
+        </a>
+    </div>
+</div>
+
+
+
+@if (!ordered.Any())
+{
+    <div class="sab-table-card">
+        <div class="sab-empty">
+            <div class="sab-empty-title">Nothing borrowed right now</div>
+            <p>Borrow asks for models to use for a while. Staff pick the units and bring them to your department's room. Finished borrows are on History.</p>
+            <a asp-action="Create" class="btn btn-primary">+ New Borrow</a>
+        </div>
+    </div>
+}
+else
+{
+    @* Borrowing and Returning, at the top: each shows its own list. *@
+    <nav class="page-tabs" aria-label="Borrowing or returning" id="borrowTabs">
+        <a href="#" data-borrow-tab="borrowing" class="page-tab @(startTab == "borrowing" ? "active" : "")">Borrowing <span class="history-tab-count">@TabCount("borrowing")</span></a>
+        <a href="#" data-borrow-tab="returning" class="page-tab @(startTab == "returning" ? "active" : "")">Returning <span class="history-tab-count">@TabCount("returning")</span></a>
+    </nav>
+
+    <div class="sab-table-card myassets" data-md data-page-size="8">
+        <aside class="myassets-list" aria-label="Your requests">
+            <div class="md-toolbar">
+                <select data-md-filter="tab" data-md-outside id="borrowTabFilter" hidden aria-hidden="true">
+                    <option value="borrowing" selected="@(startTab == "borrowing")"></option>
+                    <option value="returning" selected="@(startTab == "returning")"></option>
+                </select>
+                <label class="asset-search">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                    <input type="text" data-md-search autocomplete="off" placeholder="Search my requests..." aria-label="Search my requests" />
+                </label>
+                @* Borrowing has stages to filter by; Returning has none. *@
+                <div class="dropdown" id="borrowFilters" hidden="@(startTab == "returning")">
+                    <button type="button" class="asset-tool-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z" /></svg>
+                        Filters
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end md-filter-menu">
+                        <label class="form-label">Status</label>
+                        <select class="form-select form-select-sm" data-md-filter="stage" id="borrowStage">
+                            <option value="">Any</option>
+                            <option value="buying">Waiting for purchase (@groups[0].Items.Count)</option>
+                            <option value="late">Waiting for Property (@groups[1].Items.Count)</option>
+                            <option value="transit">Waiting to be received (@groups[2].Items.Count)</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            @foreach (var g in groups.Where(g => g.Items.Any()))
+            {
+                <div class="myassets-group" data-md-group>
+                    <div class="myassets-group-label group-@g.Key">@g.Label · <span data-md-count>@g.Items.Count</span></div>
+                    @foreach (var r in g.Items)
+                    {
+                        var late = IsLate(r);
+                        var units = r.Units.Count > 0 ? r.Units.Count : r.TotalQuantity;
+                        var detail = r.RequestStatus switch
+                        {
+                            RequestStatus.InTransit => r.RequestType == RequestType.Borrow ? "pick up at " + (r.PickupLocationName ?? "the pickup point") : "on its way",
+                            RequestStatus.Assigned => r.ReturnBy is not null ? "due " + r.ReturnBy.Value.ToString("MMM d")
+                                : r.IsPermanent ? "delivered · confirm receipt" : "no due date",
+                            _ => When(r)
+                        };
+                        var sub = $"{units} unit{(units == 1 ? "" : "s")} · {detail}";
+                        var dueIn = r.ReturnBy is not null ? (r.ReturnBy.Value.Date - today).Days : 0;
+                        string right;
+                        if (late) { right = dueIn >= 0 ? "late today" : Days(-dueIn) + " late"; }
+                        else if (r.RequestStatus == RequestStatus.Assigned && r.ReturnBy is not null)
+                        { right = dueIn == 0 ? "due today" : dueIn == 1 ? "tomorrow" : $"in {dueIn} days"; }
+                        else if (r.AwaitsAcknowledgment) { right = "to confirm"; }
+                        else if (r.BeingBought) { right = "being bought"; }
+                        else { right = Status(r.RequestStatus, r.RequestType); }
+                        var tone = late || r.RequestStatus is RequestStatus.Rejected ? "item-late"
+                            : r.RequestStatus == RequestStatus.InTransit ? "item-transit" : "";
+                        <button type="button" class="myassets-item @tone" data-entry="r-@r.RequestID"
+                                data-type="@r.RequestType.ToString().ToLowerInvariant()"
+                                data-stage="@g.Key"
+                                data-tab="@g.Tab"
+                                data-search="@($"#{r.RequestID} {r.RequestID} {Title(r)} {r.RequestType} {Status(r.RequestStatus, r.RequestType)}".ToLowerInvariant())">
+                            <span class="myassets-badge">
+                                <strong>#@r.RequestID</strong>
+                                <small>@r.RequestType</small>
+                            </span>
+                            <span class="myassets-item-main">
+                                <span class="myassets-item-title">@Title(r)</span>
+                                <span class="myassets-item-sub">@sub</span>
+                            </span>
+                            <span class="myassets-item-due">@right</span>
+                        </button>
+                    }
+                </div>
+            }
+            <div class="myassets-nomatch" data-md-empty hidden>Nothing matches your search.</div>
+
+            <div class="md-foot">
+                <span data-md-range></span>
+                <div data-md-pager></div>
+            </div>
+        </aside>
+
+        <section class="myassets-detail">
+            @foreach (var r in ordered)
+            {
+                var isBorrow = r.RequestType == RequestType.Borrow;
+                var late = IsLate(r);
+                var st = r.RequestStatus;
+                var stopped = st is RequestStatus.Rejected or RequestStatus.Cancelled;
+                var handedOver = st is RequestStatus.Assigned or RequestStatus.Returned or RequestStatus.Fulfilled;
+                var units = r.Units.Count > 0 ? r.Units.Count : r.TotalQuantity;
+                var receiving = st == RequestStatus.InTransit || r.AwaitsAcknowledgment;
+                var steps = new List<RequestStep>
+                {
+                    new("Submitted", r.RequestDate.ToString("MMM d"), RequestStepState.Done)
+                };
+                // More than Property had: bought for its stock first.
+                if (r.PurchaseRequestID is not null)
+                    steps.Add(r.BeingBought
+                        ? new RequestStep("Procurement", "being bought", RequestStepState.Current)
+                        : r.PurchaseStatus == NewItemStatus.Delivered
+                            ? new RequestStep("Procurement", "in stock", RequestStepState.Done)
+                            : new RequestStep("Procurement", "not bought", RequestStepState.Stopped));
+                steps.Add(new(st == RequestStatus.Rejected ? "Rejected" : st == RequestStatus.Cancelled ? "Cancelled" : "Property",
+                    st == RequestStatus.Pending ? (r.BeingBought ? null : "waiting") : r.ApprovalDate?.ToString("MMM d"),
+                    st == RequestStatus.Pending ? (r.BeingBought ? RequestStepState.Todo : RequestStepState.Current)
+                        : stopped ? RequestStepState.Stopped : RequestStepState.Done));
+                steps.Add(new("Receiving",
+                    st == RequestStatus.InTransit ? "at " + (r.PickupLocationName ?? r.RequestedLocationName)
+                        : r.AwaitsAcknowledgment ? "confirm receipt"
+                        : handedOver ? r.AssignedDate?.ToString("MMM d") : null,
+                    receiving ? RequestStepState.Current : handedOver ? RequestStepState.Done : RequestStepState.Todo));
+                steps.Add(r.IsPermanent
+                        ? new RequestStep("You confirm", r.AcknowledgedAt?.ToString("MMM d") ?? "receipt",
+                            st == RequestStatus.Fulfilled ? RequestStepState.Done : st == RequestStatus.Assigned ? RequestStepState.Current : RequestStepState.Todo)
+                        : new RequestStep("Return",
+                            st == RequestStatus.Returned ? r.ReturnedDate?.ToString("MMM d") : r.ReturnBy is not null ? "by " + r.ReturnBy.Value.ToString("MMM d") : null,
+                            st == RequestStatus.Returned ? RequestStepState.Done : late ? RequestStepState.Late
+                                : st == RequestStatus.Assigned && !r.AwaitsAcknowledgment ? RequestStepState.Current : RequestStepState.Todo));
+                var pillCss = late ? "st-overdue" : st switch
+                {
+                    RequestStatus.Pending => "st-disposed",
+                    RequestStatus.InTransit => "st-intransit",
+                    RequestStatus.Assigned => "st-assigned",
+                    RequestStatus.Rejected => "st-overdue",
+                    _ => "st-available"
+                };
+
+                <article class="myassets-panel" data-panel="r-@r.RequestID" hidden>
+                    <button type="button" class="myassets-back" data-back>&larr; All my requests</button>
+
+                    <div class="myassets-panel-head">
+                        <div class="min-w-0">
+                            <div class="myassets-panel-meta">
+                                <span class="md-tag @(isBorrow ? "" : "is-transfer")">@r.RequestType</span>
+                                <span>Request #@r.RequestID · submitted @r.RequestDate.ToString("MMM d, h:mm tt")</span>
+                            </div>
+                            <h3 class="myassets-panel-title">@Title(r)</h3>
+                        </div>
+                        <div class="myassets-panel-actions">
+                            <span class="asset-pill asset-status @pillCss">@(late ? "Overdue" : Status(st, r.RequestType))</span>
+                            <a asp-action="Details" asp-route-id="@r.RequestID" asp-route-from="mine" class="btn btn-outline-secondary">View &rarr;</a>
+                        </div>
+                    </div>
+
+                    <partial name="_RequestSteps" model="steps" />
+
+                    <div class="myassets-stats">
+                        <div><span>Type</span><strong>@r.RequestType</strong></div>
+                        <div class="@(late ? "is-late" : "")"><span>When</span><strong>@When(r)</strong></div>
+                        <div>
+                            <span>@(isBorrow ? "Pick up at" : "Move to")</span>
+                            <strong>@DisplayText.Or(isBorrow ? r.PickupLocationName ?? r.RequestedLocationName : r.RequestedLocationName, "Chosen when approved")</strong>
+                        </div>
+                        <div><span>Units</span><strong>@units</strong></div>
+                    </div>
+
+                    <div class="req-items mt-3">
+                        @foreach (var item in r.Items)
+                        {
+                            <div class="req-item">
+                                <span class="req-item-icon" aria-hidden="true">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7z" /><path d="m3 7 9 5 9-5M12 12v10" /></svg>
+                                </span>
+                                <div class="min-w-0">
+                                    <div class="req-item-name">@item.ModelName</div>
+                                    @if (categories.TryGetValue(item.ModelID, out var cat))
+                                    {
+                                        <div class="req-item-meta">@cat</div>
+                                    }
+                                </div>
+                                <span class="req-item-qty">×@item.Quantity</span>
+                            </div>
+                        }
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(r.Reason))
+                    {
+                        <div class="req-note"><strong>Reason:</strong> @r.Reason</div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(r.Remarks))
+                    {
+                        <div class="req-note"><strong>@(st == RequestStatus.Rejected ? "Why it was rejected" : "Staff remarks"):</strong> @r.Remarks</div>
+                    }
+
+                    @if (st == RequestStatus.Pending)
+                    {
+                        <div class="req-action">
+                            <div class="req-action-note">You can cancel this while it is still pending.</div>
+                            <div class="req-action-buttons">
+                                <button type="button" class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#cancel-@r.RequestID">Cancel request</button>
+                            </div>
+                        </div>
+                    }
+                    else if (st == RequestStatus.InTransit)
+                    {
+                        <div class="req-action">
+                            <div>
+                                <div class="req-action-title">@(isBorrow ? "Ready for you" : "On its way")</div>
+                                <div class="req-action-note">
+                                    @(isBorrow ? "Collect it from the Property Officer at " + (r.PickupLocationName ?? "the pickup location") + "." : "It is being moved to " + (r.RequestedLocationName ?? "the new location") + ".")
+                                </div>
+                            </div>
+                        </div>
+                    }
+                    @if (r.AwaitsAcknowledgment)
+                    {
+                        <form asp-action="Acknowledge" asp-route-id="@r.RequestID" asp-route-from="mine" method="post" class="req-action"
+                              onsubmit="return confirm('Confirm you received every item on request #@r.RequestID?');">
+                            @Html.AntiForgeryToken()
+                            @Html.FormTicket()
+                            <input type="hidden" name="rowVersionBase64" value="@Convert.ToBase64String(r.RowVersion)" />
+                            <div>
+                                <div class="req-action-title">Did you get @(units == 1 ? "it" : "them")?</div>
+                                <div class="req-action-note">
+                                    @(r.IsPermanent
+                                        ? $"Confirm you received the items. They then become {r.DepartmentName}'s."
+                                        : "Confirm you received the items. You answer for them until they are returned.")
+                                </div>
+                            </div>
+                            <div class="req-action-buttons">
+                                <button type="submit" class="btn btn-primary">Confirm receipt</button>
+                            </div>
+                        </form>
+                    }
+                    @if (late)
+                    {
+                        <div class="req-action is-late">
+                            <div>
+                                <div class="req-action-title">@Days((today - r.ReturnBy!.Value.Date).Days) late</div>
+                                <div class="req-action-note">Bring @(units == 1 ? "it" : "these") to the Property Officer so the return can be recorded.</div>
+                            </div>
+                        </div>
+                    }
+                </article>
+            }
+        </section>
+    </div>
+
+    @* One confirmation per pending request, outside the list so a hidden
+       panel cannot hide it (Views/Shared/_CancelRequestModal). *@
+    @foreach (var r in Model.Where(r => r.RequestStatus == RequestStatus.Pending))
+    {
+        <partial name="_CancelRequestModal" model="r" />
+    }
+}
+
+<script>
+    // Borrowing / Returning / Finished: each tab narrows the list (the hidden
+    // "tab" filter of the list above).
+    (function () {
+        var tabs = document.getElementById('borrowTabs');
+        var filter = document.getElementById('borrowTabFilter');
+        if (!tabs || !filter) return;
+        tabs.addEventListener('click', function (e) {
+            var a = e.target.closest('[data-borrow-tab]');
+            if (!a) return;
+            e.preventDefault();
+            tabs.querySelectorAll('[data-borrow-tab]').forEach(function (t) { t.classList.toggle('active', t === a); });
+            filter.value = a.getAttribute('data-borrow-tab');
+            // Returning has no filters: clear the Borrowing stage and hide them.
+            var returning = filter.value === 'returning';
+            var menu = document.getElementById('borrowFilters'), stage = document.getElementById('borrowStage');
+            if (menu) menu.hidden = returning;
+            if (returning && stage && stage.value) stage.value = '';
+            filter.dispatchEvent(new Event('change'));
+        });
+    })();
+</script>

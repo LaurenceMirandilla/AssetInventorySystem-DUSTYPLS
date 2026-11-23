@@ -1,0 +1,358 @@
+@model SchoolInventoryManagement.BLL.DTOs.PurchaseOrderDTO
+@{
+    // A page of its own, to print and bring to the supplier: a standard
+    // purchase order (vendor, ship to, items, totals, comments). A draft is
+    // printed with Print, which locks it (Scripts/037); receipts from the
+    // supplier are attached below the sheet.
+    Layout = null;
+    var autoPrint = ViewBag.AutoPrint is bool ap && ap;
+    var buyer = Model.CanAttach;
+    var back = Url.Action("Index", "Purchasing", new { tab = "orders" });
+    var requisition = Url.Action("Details", "NewItemRequests", new { id = Model.NewItemRequestID });
+    // At least this many item rows, so the table keeps its shape on paper.
+    const int MinRows = 12;
+    string Qty(SchoolInventoryManagement.BLL.DTOs.PurchaseOrderLineDTO l) =>
+        string.IsNullOrWhiteSpace(l.Unit) ? l.Quantity.ToString() : $"{l.Quantity} {SupplyText.Unit(l.Quantity, l.Unit)}";
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@Model.PONumber - Ste. Anne De Beaupre School</title>
+    <link rel="icon" href="~/images/favicon.png" />
+    <style>
+        :root { --ink: #1c2a22; --muted: #5d6b63; --green: #1f8a4c; --green-dark: #17693a; --fill: #f2f2f2; --gold: #ffc000; }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #eef2ef; color: var(--ink); font: 13.5px/1.4 Arial, "Segoe UI", Roboto, sans-serif; }
+        .bar { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap;
+               max-width: 860px; margin: 16px auto 0; padding: 0 16px; }
+        .bar a, .bar button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid #d5ddd8;
+               background: #fff; color: var(--ink); text-decoration: none; cursor: pointer; }
+        .bar .primary { background: var(--green-dark); border-color: var(--green-dark); color: #fff; }
+        .bar .danger { color: #a12a2a; }
+        .bar button[disabled] { opacity: .5; cursor: not-allowed; }
+        .bar form { display: inline; }
+        .state { max-width: 860px; margin: 10px auto 0; padding: 0 16px; }
+        .state div { padding: 9px 12px; border-radius: 6px; border: 1px solid #d5ddd8; background: #fff; }
+        .state .draft { border-color: #e6c27a; background: #fff8e6; }
+        .state .cancelled { border-color: #e3a5a5; background: #fbecec; }
+        .receipts { max-width: 860px; margin: 0 auto 28px; padding: 0 16px; }
+        .receipts h2 { font-size: 15px; margin: 0 0 8px; }
+        .receipts ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+        .receipts li { background: #fff; border: 1px solid #d5ddd8; border-radius: 6px; padding: 8px; }
+        .receipts img { width: 100%; height: 120px; object-fit: cover; border-radius: 4px; display: block; background: #f2f2f2; }
+        .receipts .pdf { height: 120px; display: flex; align-items: center; justify-content: center; background: #f2f2f2; border-radius: 4px; font-weight: 700; color: var(--muted); }
+        .receipts small { display: block; color: var(--muted); margin-top: 4px; word-break: break-word; }
+        .receipts .rm { margin-top: 6px; font: inherit; font-size: 12px; border: 0; background: none; color: #a12a2a; cursor: pointer; padding: 0; }
+        .receipts .none { color: var(--muted); }
+        .sheet { position: relative; }
+        .stamp { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%) rotate(-18deg); font-size: 96px; font-weight: 800;
+                 letter-spacing: .08em; color: rgba(180, 40, 40, .14); pointer-events: none; white-space: nowrap; }
+        .msg { max-width: 860px; margin: 10px auto 0; padding: 0 16px; }
+        .msg div { padding: 8px 12px; border-radius: 6px; background: #e3f2e8; }
+        .msg .err { background: #f8e1e1; }
+
+        .sheet { max-width: 860px; margin: 12px auto 24px; background: #fff; padding: 34px 38px; border: 3px solid var(--green); }
+        .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; }
+        .school img { width: 76px; height: 76px; object-fit: contain; display: block; }
+        .school .name { color: var(--green); font-size: 21px; margin: 6px 0 8px; }
+        .school div { line-height: 1.5; }
+        .title { text-align: right; }
+        .title h1 { margin: 0 0 12px; color: var(--green); font-size: 40px; font-weight: 800; letter-spacing: .01em; line-height: 1; }
+        .meta { display: grid; grid-template-columns: auto auto; gap: 2px 24px; justify-content: end; text-align: right; }
+        .meta b { font-weight: 400; }
+
+        .parties { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; margin: 26px 0 22px; }
+        .band { background: var(--green); color: #fff; font-weight: 700; text-transform: uppercase; padding: 5px 10px 5px 26px; letter-spacing: .02em; }
+        .parties .body { padding: 6px 2px 0; line-height: 1.55; }
+
+        table { width: 100%; border-collapse: collapse; }
+        .terms th, .items th { background: var(--green); color: #fff; text-transform: uppercase; font-size: 12.5px; padding: 7px 8px; text-align: center; }
+        .terms { border: 3px solid var(--green); }
+        .terms td { border: 2px solid var(--green); height: 30px; padding: 4px 8px; text-align: center; }
+        .items { border: 3px solid var(--green); margin-top: 22px; }
+        .items td { border-left: 2px solid var(--green); border-right: 2px solid var(--green); padding: 3px 8px; height: 24px; vertical-align: top; }
+        .items td.num { text-align: right; white-space: nowrap; }
+        .items td.c { text-align: center; }
+        .items td.tot { background: var(--fill); text-align: right; }
+        .items small { display: block; color: var(--muted); }
+
+        .below { display: grid; grid-template-columns: 1fr 300px; gap: 40px; margin-top: 8px; align-items: start; }
+        .comments .band { padding-left: 8px; text-transform: none; color: #111; margin-top: 32px; }
+        .comments .body { padding: 8px 4px; line-height: 1.5; white-space: pre-line; }
+        .sums div { display: flex; justify-content: space-between; padding: 4px 8px; }
+        .sums .sub span:last-child { background: var(--fill); min-width: 150px; text-align: right; margin: -4px -8px -4px 0; padding: 4px 8px; }
+        .sums .grand { background: var(--gold); font-weight: 800; margin-top: 4px; }
+
+        .sign { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 44px; }
+        .sign div { border-top: 1px solid var(--ink); padding-top: 6px; }
+        .sign small { color: var(--muted); }
+        .foot { margin-top: 40px; text-align: center; line-height: 1.6; }
+
+        @@media (max-width: 680px) {
+            .sheet { padding: 18px 14px; }
+            .top, .parties, .below, .sign { display: block; }
+            .title { text-align: left; margin-top: 12px; }
+            .title h1 { font-size: 28px; }
+            .meta { justify-content: start; text-align: left; }
+            .parties > div { margin-bottom: 16px; }
+            .terms, .items { font-size: 12px; }
+        }
+        @@media print {
+            @@page { size: A4; margin: 10mm; }
+            body { background: #fff; }
+            .bar, .msg, .state, .receipts { display: none; }
+            .sheet { margin: 0; max-width: none; }
+            .band, .terms th, .items th, .items td.tot, .sums .grand, .sums .sub span:last-child { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        }
+    </style>
+</head>
+<body>
+    <div class="bar">
+        <span style="display:flex;gap:8px;flex-wrap:wrap;">
+            <a href="@back">&larr; Purchase orders</a>
+            <a href="@requisition">Requisition #@Model.NewItemRequestID</a>
+        </span>
+        <span style="display:flex;gap:8px;flex-wrap:wrap;">
+            @if (Model.CanEdit)
+            {
+                <a href="@Url.Action("EditOrder", new { id = Model.PurchaseOrderID })" class="edit">Edit order</a>
+            }
+            else if (buyer && Model.IsPrinted)
+            {
+                <button type="button" disabled title="Printed: it can no longer be changed">Edit order</button>
+            }
+            @if (Model.CanCancel)
+            {
+                <form method="post" action="@Url.Action("CancelOrder", new { id = Model.PurchaseOrderID })" id="cancelForm">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="reason" id="cancelReason" />
+                    <button type="submit" class="danger">Cancel order</button>
+                </form>
+            }
+            else if (buyer && Model.IsPrinted)
+            {
+                <button type="button" class="danger" disabled title="Printed: it can no longer be cancelled">Cancel order</button>
+            }
+            @if (Model.CanAttach)
+            {
+                <form method="post" action="@Url.Action("AttachReceipt", new { id = Model.PurchaseOrderID, back = "order" })" enctype="multipart/form-data" id="receiptForm">
+                    @Html.AntiForgeryToken()
+                    <input type="file" name="receipt" id="receiptFile" accept="@FileUploads.DocumentAccept" data-max-bytes="@FileUploads.MaxBytes" hidden />
+                    <button type="button" onclick="document.getElementById('receiptFile').click()">Attach receipt</button>
+                </form>
+            }
+            @if (Model.CanPrint)
+            {
+                <form method="post" action="@Url.Action("PrintOrder", new { id = Model.PurchaseOrderID })" id="printForm">
+                    @Html.AntiForgeryToken()
+                    <button type="submit" class="primary">Print</button>
+                </form>
+            }
+            else if (!Model.IsCancelled)
+            {
+                <button type="button" class="primary" onclick="window.print()">Print</button>
+            }
+        </span>
+    </div>
+    <div class="state">
+        @if (Model.IsDraft)
+        {
+            <div class="draft"><strong>Draft</strong> · not printed yet. @(Model.CanPrint ? "Print it to bring to the supplier. Once printed it can no longer be edited or cancelled, and the requisition waits for the supplier once everything on it is ordered." : "A Purchasing Officer prints it.")</div>
+        }
+        else if (Model.IsPrinted)
+        {
+            <div><strong>Printed</strong>@(Model.PrintedAt is null ? "" : " " + Model.PrintedAt.Value.ToString("MMM d, yyyy · h:mm tt"))@(Model.PrintedByName is null ? "" : " by " + Model.PrintedByName) · it can no longer be changed or cancelled.</div>
+        }
+        else
+        {
+            <div class="cancelled"><strong>Cancelled</strong>@(Model.CancelledAt is null ? "" : " " + Model.CancelledAt.Value.ToString("MMM d, yyyy · h:mm tt"))@(Model.CancelledByName is null ? "" : " by " + Model.CancelledByName)@(string.IsNullOrWhiteSpace(Model.CancelReason) ? "." : ": " + Model.CancelReason)</div>
+        }
+    </div>
+    @if (TempData["StatusMessage"] != null)
+    {
+        <div class="msg"><div>@TempData["StatusMessage"]</div></div>
+    }
+    @if (TempData["ErrorMessage"] != null)
+    {
+        <div class="msg"><div class="err">@TempData["ErrorMessage"]</div></div>
+    }
+
+    <div class="sheet">
+        @if (Model.IsDraft) {<div class="stamp" aria-hidden="true">DRAFT</div>}
+        @if (Model.IsCancelled) {<div class="stamp" aria-hidden="true">CANCELLED</div>}
+        <div class="top">
+            <div class="school">
+                <img src="~/images/logo.png" alt="" />
+                <div class="name">Ste. Anne De Beaupre School</div>
+                <div>@Model.BranchName</div>
+                @if (!string.IsNullOrWhiteSpace(Model.BranchAddress)) {<div>@Model.BranchAddress</div>}
+                @if (!string.IsNullOrWhiteSpace(Model.BranchContact)) {<div>@Model.BranchContact</div>}
+            </div>
+            <div class="title">
+                <h1>PURCHASE ORDER</h1>
+                <div class="meta">
+                    <b>DATE</b><span>@Model.OrderDate.ToString("MM-dd-yyyy")</span>
+                    <b>PO #</b><span>@Model.PONumber</span>
+                    <b>REQUISITION #</b><span>@Model.NewItemRequestID</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="parties">
+            <div>
+                <div class="band">Vendor</div>
+                <div class="body">
+                    <strong>@Model.SupplierName</strong>
+                    @if (!string.IsNullOrWhiteSpace(Model.SupplierContact)) {<div>@Model.SupplierContact</div>}
+                    @if (!string.IsNullOrWhiteSpace(Model.SupplierAddress)) {<div>@Model.SupplierAddress</div>}
+                </div>
+            </div>
+            <div>
+                <div class="band">Ship to</div>
+                <div class="body">
+                    <strong>@DisplayText.Or(Model.DeliverTo, "Property Department")</strong>
+                    <div>Ste. Anne De Beaupre School · @Model.BranchName</div>
+                    @if (!string.IsNullOrWhiteSpace(Model.BranchAddress)) {<div>@Model.BranchAddress</div>}
+                    @if (!string.IsNullOrWhiteSpace(Model.BranchContact)) {<div>@Model.BranchContact</div>}
+                    @if (Model.NeededBy is not null) {<div>Needed by @Model.NeededBy.Value.ToString("MMMM d, yyyy")</div>}
+                </div>
+            </div>
+        </div>
+
+        <table class="terms">
+            <thead>
+                <tr><th style="width:34%;">Requisitioner</th><th>Department</th><th style="width:28%;">Needed by</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>@Model.RequestedByUserName</td>
+                    <td>@Model.DepartmentName</td>
+                    <td>@(Model.NeededBy?.ToString("MMMM d, yyyy") ?? "-")</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <table class="items">
+            <thead>
+                <tr><th style="width:14%;">Item #</th><th>Description</th><th style="width:12%;">Qty</th><th style="width:15%;">Unit price</th><th style="width:16%;">Total</th></tr>
+            </thead>
+            <tbody>
+                @for (var i = 0; i < Math.Max(MinRows, Model.Lines.Count); i++)
+                {
+                    if (i < Model.Lines.Count)
+                    {
+                        var l = Model.Lines[i];
+                        <tr>
+                            <td class="c">@(i + 1)</td>
+                            <td>@l.ItemName@if (!string.IsNullOrWhiteSpace(l.Description)) {<small>@l.Description</small>}</td>
+                            <td class="c">@Qty(l)</td>
+                            <td class="num">@l.UnitPrice.ToString("N2")</td>
+                            <td class="tot">@l.Amount.ToString("N2")</td>
+                        </tr>
+                    }
+                    else
+                    {
+                        <tr><td></td><td></td><td></td><td></td><td class="tot">-</td></tr>
+                    }
+                }
+            </tbody>
+        </table>
+
+        <div class="below">
+            <div class="comments">
+                <div class="band">Comments or Special Instructions</div>
+                <div class="body">@(string.Join("\n", new[]
+                    {
+                        string.IsNullOrWhiteSpace(Model.Reason) ? null : "Purpose: " + Model.Reason,
+                        string.IsNullOrWhiteSpace(Model.Notes) ? null : Model.Notes,
+                        $"For requisition #{Model.NewItemRequestID} of the {Model.DepartmentName}" + (Model.ForStock ? " (stock for borrowing)" : "") + $", requested {Model.RequestedOn:MMM d, yyyy}."
+                    }.Where(x => x != null)))</div>
+            </div>
+            <div class="sums">
+                <div class="sub"><span>SUBTOTAL</span><span>@Model.Subtotal.ToString("N2")</span></div>
+                @if (Model.Extras != 0)
+                {
+                    @* Only on orders made before shipping and costs were taken off the form. *@
+                    <div><span>TAX, SHIPPING, OTHER</span><span>@Model.Extras.ToString("N2")</span></div>
+                }
+                <div class="grand"><span>TOTAL</span><span>₱ @Model.Total.ToString("N2")</span></div>
+            </div>
+        </div>
+
+        <div class="sign">
+            <div>
+                <strong>@Model.PreparedByName</strong><br />
+                <small>Prepared by@(string.IsNullOrWhiteSpace(Model.PreparedByRole) ? "" : ", " + Model.PreparedByRole) · @Model.CreatedAt.ToString("MMM d, yyyy")</small>
+            </div>
+            <div>
+                <br />
+                <small>Received by the supplier (name, signature, date)</small>
+            </div>
+        </div>
+
+        <div class="foot">
+            If you have any questions about this purchase order, please contact<br />
+            @Model.PreparedByName@(string.IsNullOrWhiteSpace(Model.PreparedByRole) ? "" : ", " + Model.PreparedByRole)@(string.IsNullOrWhiteSpace(Model.BranchContact) ? "" : " · " + Model.BranchContact)
+        </div>
+    </div>
+
+    @* Receipts (Scripts/037): not printed. *@
+    <section class="receipts" aria-label="Receipts">
+        <h2>Receipts</h2>
+        @if (!Model.Attachments.Any())
+        {
+            <p class="none">@(Model.CanAttach ? "None yet. Use Attach receipt to add a photo or PDF of the supplier's receipt." : "None attached.")</p>
+        }
+        else
+        {
+            <ul>
+                @foreach (var f in Model.Attachments)
+                {
+                    <li>
+                        <a href="@f.FileUrl" target="_blank" rel="noopener">
+                            @if (f.IsPdf) {<span class="pdf">PDF</span>} else {<img src="@f.FileUrl" alt="Receipt @f.FileName" loading="lazy" />}
+                        </a>
+                        <small>@f.FileName</small>
+                        <small>@f.UploadedByName · @f.UploadedAt.ToString("MMM d, yyyy · h:mm tt")</small>
+                        @if (Model.CanAttach)
+                        {
+                            <form method="post" action="@Url.Action("RemoveReceipt", new { attachmentId = f.AttachmentID, id = Model.PurchaseOrderID, back = "order" })" onsubmit="return confirm('Remove this receipt?');">
+                                @Html.AntiForgeryToken()
+                                <button type="submit" class="rm">Remove</button>
+                            </form>
+                        }
+                    </li>
+                }
+            </ul>
+        }
+    </section>
+
+    <script>
+        (function () {
+            var file = document.getElementById('receiptFile');
+            if (file) file.addEventListener('change', function () {
+                if (!file.files.length) return;
+                var max = parseInt(file.dataset.maxBytes, 10) || 0;
+                if (max && file.files[0].size > max) { alert('The receipt is too big. The limit is ' + Math.round(max / 1048576) + ' MB.'); file.value = ''; return; }
+                document.getElementById('receiptForm').submit();
+            });
+            var cancel = document.getElementById('cancelForm');
+            if (cancel) cancel.addEventListener('submit', function (e) {
+                var why = prompt('Cancel @Model.PONumber? Its items become to buy again. Reason (optional):', '');
+                if (why === null) { e.preventDefault(); return; }
+                document.getElementById('cancelReason').value = why;
+            });
+            var print = document.getElementById('printForm');
+            if (print) print.addEventListener('submit', function (e) {
+                if (!confirm('Print @Model.PONumber? Once printed it can no longer be edited or cancelled.')) e.preventDefault();
+            });
+            @if (autoPrint)
+            {
+                <text>window.addEventListener('load', function () { setTimeout(function () { window.print(); }, 300); });</text>
+            }
+        })();
+    </script>
+</body>
+</html>

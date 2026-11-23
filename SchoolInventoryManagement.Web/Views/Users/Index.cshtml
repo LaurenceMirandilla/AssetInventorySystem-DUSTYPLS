@@ -1,0 +1,325 @@
+﻿@using SchoolInventoryManagement.Web.Controllers
+@using SchoolInventoryManagement.DAL.Constants
+@using SchoolInventoryManagement.BLL.Services
+@model List<SchoolInventoryManagement.BLL.DTOs.UserResponseDTO>
+@{
+    ViewData["Title"] = "Users";
+
+    // Reset Password refuses to act on your own account (UserService sends
+    // you to Change Password instead), and you can't deactivate yourself,
+    // so neither is offered there.
+    var currentUserId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+    // Every account is on the page; the Status filter starts on what the
+    // address asked for (Active unless ?status=Inactive or All).
+    var statusFilter = (ViewData["StatusFilter"] as string) ?? UsersController.StatusFilterActive;
+    var startStatus = statusFilter == UsersController.StatusFilterAll ? "" : statusFilter.ToLowerInvariant();
+
+    var users = Model.OrderBy(u => u.FirstName).ThenBy(u => u.LastName).ToList();
+    var allBranches = ViewBag.FilterBranches as List<SchoolInventoryManagement.BLL.DTOs.BranchDTO>;
+    var allDepartments = ViewBag.FilterDepartments as List<SchoolInventoryManagement.BLL.DTOs.DepartmentDTO>;
+    var branches = allBranches is not null
+        ? allBranches.Select(b => (b.BranchID, b.BranchName)).OrderBy(b => b.BranchName).ToList()
+        : users.Select(u => (u.BranchID, u.BranchName)).Distinct().OrderBy(b => b.BranchName).ToList();
+    var departments = allDepartments is not null
+        ? allDepartments.Select(d => (d.DepartmentID, d.DepartmentName, d.BranchID, d.BranchName)).OrderBy(d => d.BranchName).ThenBy(d => d.DepartmentName).ToList()
+        : users.Select(u => (u.DepartmentID, u.DepartmentName, u.BranchID, u.BranchName)).Distinct()
+            .OrderBy(d => d.BranchName).ThenBy(d => d.DepartmentName).ToList();
+    // Every role, held by someone yet or not (a new Purchasing Officer
+    // role had no one in it, so it was missing from the filter).
+    var roles = new[]
+        {
+            SchoolInventoryManagement.DAL.Constants.RoleNames.Administrator,
+            SchoolInventoryManagement.DAL.Constants.RoleNames.Principal,
+            SchoolInventoryManagement.DAL.Constants.RoleNames.AssetOfficer,
+            SchoolInventoryManagement.DAL.Constants.RoleNames.PurchasingOfficer,
+            SchoolInventoryManagement.DAL.Constants.RoleNames.DepartmentHead,
+            SchoolInventoryManagement.DAL.Constants.RoleNames.Teacher,
+            SchoolInventoryManagement.DAL.Constants.RoleNames.Staff
+        }
+        .Concat(users.Select(u => u.RoleName))
+        .Distinct().OrderBy(r => r).ToList();
+
+    // The Branch and Department filters start where the address asked
+    // (a "View users" link on Departments or Branches).
+    var deptFilter = ViewData["DepartmentFilter"] as int?;
+    var branchFilter = ViewData["BranchFilter"] as int?;
+
+    // The list's heading says what it shows: "Active users · Admin Office,
+    // Annex Campus (High School)". The script below keeps it in step with
+    // the filters.
+    var startLabel = startStatus switch { "active" => "Active users", "inactive" => "Inactive users", _ => "All users" };
+    var startDept = departments.FirstOrDefault(d => d.DepartmentID == deptFilter);
+    var startBranch = branches.FirstOrDefault(b => b.BranchID == branchFilter);
+    if (deptFilter is not null && startDept.DepartmentName is not null)
+        startLabel += " · " + startDept.DepartmentName + ", " + startDept.BranchName;
+    else if (branchFilter is not null && startBranch.BranchName is not null)
+        startLabel += " · " + startBranch.BranchName;
+
+    static string Search(SchoolInventoryManagement.BLL.DTOs.UserResponseDTO u) =>
+        $"{u.FirstName} {u.LastName} {u.Username} {u.RoleName} {u.DepartmentName} {u.BranchName}".ToLowerInvariant();
+}
+@if (TempData["ErrorMessage"] != null)
+{
+    <div class="alert alert-danger">@TempData["ErrorMessage"]</div>
+}
+
+<div class="asset-detail-head mb-3 pb-0 border-0">
+    <div>
+        <h2 class="asset-detail-title">Users</h2>
+        <div class="asset-detail-sub">@users.Count(u => u.Status == "Active") can sign in · @users.Count(u => u.Status != "Active") inactive</div>
+    </div>
+    <div class="asset-detail-actions">
+        <a asp-action="Create" class="btn btn-primary">+ Add user</a>
+    </div>
+</div>
+
+@if (!users.Any())
+{
+    <div class="sab-table-card">
+        <div class="sab-empty">
+            <div class="sab-empty-title">No users yet</div>
+            <p>Add the first account with + New user.</p>
+        </div>
+    </div>
+}
+else
+{
+    <div class="sab-table-card myassets" data-md data-page-size="10" data-noun="users">
+        <aside class="myassets-list" aria-label="Users">
+            <div class="md-toolbar">
+                <label class="asset-search">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                    <input type="text" data-md-search autocomplete="off" placeholder="Name, username or department..." aria-label="Search users" />
+                </label>
+                <div class="dropdown">
+                    <button type="button" class="asset-tool-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z" /></svg>
+                        Filters
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end md-filter-menu">
+                        <label class="form-label">Status</label>
+                        <select class="form-select form-select-sm mb-2" data-md-filter="status">
+                            <option value="">Any</option>
+                            <option value="active" selected="@(startStatus == "active")">Active</option>
+                            <option value="inactive" selected="@(startStatus == "inactive")">Inactive</option>
+                        </select>
+                        <label class="form-label">Role</label>
+                        <select class="form-select form-select-sm mb-2" data-md-filter="role">
+                            <option value="">Any</option>
+                            @foreach (var r in roles)
+                            {
+                                <option value="@r.ToLowerInvariant()">@r</option>
+                            }
+                        </select>
+                        <label class="form-label">Branch</label>
+                        <div class="mb-2">
+                            <select class="form-select form-select-sm" data-md-filter="branch" id="userBranch" data-combobox>
+                                <option value="">Any</option>
+                                @foreach (var b in branches)
+                                {
+                                    <option value="@b.BranchID" selected="@(b.BranchID == branchFilter)">@b.BranchName</option>
+                                }
+                            </select>
+                        </div>
+                        <label class="form-label">Department</label>
+                        <select class="form-select form-select-sm" data-md-filter="dept" id="userDept" data-combobox>
+                            <option value="">Any</option>
+                            @foreach (var d in departments)
+                            {
+                                <option value="@d.DepartmentID" data-branch="@d.BranchID" data-name="@d.DepartmentName" data-branch-name="@d.BranchName" selected="@(d.DepartmentID == deptFilter)">@d.BranchName — @d.DepartmentName</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="myassets-group" data-md-group>
+                <div class="myassets-group-label"><span><span data-users-label>@startLabel</span> · <span data-md-count>@users.Count</span></span></div>
+                @foreach (var u in users)
+                {
+                    <button type="button" class="myassets-item" data-entry="u-@u.UserID" data-search="@Search(u)"
+                            data-status="@u.Status.ToLowerInvariant()" data-role="@u.RoleName.ToLowerInvariant()"
+                            data-branch="@u.BranchID" data-dept="@u.DepartmentID">
+                        <span class="myassets-item-main">
+                            <span class="myassets-item-title">@u.FirstName @u.LastName@(u.UserID.ToString() == currentUserId ? " (you)" : "")</span>
+                            <span class="myassets-item-sub">@u.RoleName · @u.DepartmentName</span>
+                        </span>
+                        <span class="status-pill status-@u.Status.ToLowerInvariant()">@u.Status</span>
+                    </button>
+                }
+            </div>
+            <div class="myassets-nomatch" data-md-empty hidden>Nobody matches.</div>
+
+            <div class="md-foot">
+                <span data-md-range></span>
+                <div data-md-pager></div>
+            </div>
+        </aside>
+
+        <section class="myassets-detail">
+            @foreach (var u in users)
+            {
+                var isSelf = u.UserID.ToString() == currentUserId;
+                var isActive = u.Status == "Active";
+                var rowVersion = Convert.ToBase64String(u.RowVersion);
+                <article class="myassets-panel" data-panel="u-@u.UserID" data-user="@u.UserID" hidden>
+                    <button type="button" class="myassets-back" data-back>&larr; All users</button>
+
+                    <div class="myassets-panel-head">
+                        <div class="min-w-0">
+                            <div class="myassets-panel-meta">
+                                <span>@u.RoleName</span>
+                                <span class="status-pill status-@u.Status.ToLowerInvariant()">@u.Status</span>
+                                @if (isSelf)
+                                {
+                                    <span>· this is you</span>
+                                }
+                            </div>
+                            <h3 class="myassets-panel-title mt-1">@u.FirstName @u.LastName</h3>
+                            <div class="lk-sub mb-0">@u.Username</div>
+                        </div>
+                        <div class="myassets-panel-actions">
+                            <a asp-action="Edit" asp-route-id="@u.UserID" class="btn btn-outline-secondary">Edit</a>
+                        </div>
+                    </div>
+
+                    <div class="myassets-stats">
+                        <div><span>Role</span><strong>@u.RoleName</strong></div>
+                        <div><span>Department</span><strong>@u.DepartmentName</strong></div>
+                        <div><span>Branch</span><strong>@u.BranchName</strong></div>
+                        <div><span>Holding now</span><strong data-ua-holding>&hellip;</strong></div>
+                    </div>
+
+                    @* Holding now / Requests / Past items: loaded when the person is picked. *@
+                    <div class="mt-3" data-ua-box data-url="@Url.Action("Activity", new { id = u.UserID })">
+                        <div class="asset-card"><div class="sab-empty"><p class="mb-0 is-empty">Loading&hellip;</p></div></div>
+                    </div>
+
+                    @if (!isSelf)
+                    {
+                        <div class="user-danger">
+                            <span class="lk-why">@(isActive ? "Deactivated users can't sign in. Their history stays." : "Reactivated, they sign in again with their current password.")</span>
+                            <div class="d-flex flex-wrap" style="gap:8px;">
+                                <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#resetPasswordModal"
+                                        data-reset-url="@Url.Action("ResetPassword", new { id = u.UserID })"
+                                        data-reset-name="@u.FirstName @u.LastName" data-reset-username="@u.Username"
+                                        data-reset-role="@u.RoleName" data-reset-version="@rowVersion">
+                                    Reset password
+                                </button>
+                                @if (isActive)
+                                {
+                                    <form asp-action="Deactivate" asp-route-id="@u.UserID" method="post"
+                                          onsubmit="return confirm('Deactivate @u.Username? They are signed out at once.');">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="rowVersionBase64" value="@rowVersion" />
+                                        <button type="submit" class="btn btn-outline-danger">Deactivate</button>
+                                    </form>
+                                }
+                                else
+                                {
+                                    <form asp-action="Reactivate" asp-route-id="@u.UserID" method="post">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="rowVersionBase64" value="@rowVersion" />
+                                        <button type="submit" class="btn btn-outline-secondary">Reactivate</button>
+                                    </form>
+                                }
+                            </div>
+                        </div>
+                    }
+                </article>
+            }
+        </section>
+    </div>
+}
+
+<partial name="_ResetPasswordModal" />
+
+@section Scripts {
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            // The branch narrows the department list (site.js).
+            var branch = document.getElementById('userBranch');
+            var dept = document.getElementById('userDept');
+            if (branch && dept) sabFilterByBranch(dept, branch, { showAllWhenEmpty: true, strip: true, notify: true });
+
+            // The list's heading follows the filters: "Active users · Admin
+            // Office, Annex Campus (High School)". It is redone whenever the
+            // list is (the count beside it changes then).
+            var label = document.querySelector('[data-users-label]');
+            var none = document.querySelector('.myassets-list [data-md-empty]');
+            var count = document.querySelector('.myassets-list [data-md-count]');
+            var status = document.querySelector('[data-md-filter="status"]');
+            var role = document.querySelector('[data-md-filter="role"]');
+            function picked(sel) { var o = sel && sel.options[sel.selectedIndex]; return o && o.value ? o : null; }
+            function relabel() {
+                if (!label) return;
+                var s = status ? status.value : '';
+                var text = s === 'active' ? 'Active users' : s === 'inactive' ? 'Inactive users' : 'All users';
+                var r = picked(role), d = picked(dept), b = picked(branch);
+                var place = d ? d.dataset.name + ', ' + d.dataset.branchName : b ? b.text : '';
+                if (r) text += ' · ' + r.text;
+                if (place) text += ' · ' + place;
+                label.textContent = text;
+                // An empty list says what it was looking for: "No active
+                // users in Property Department, Special Education Campus."
+                if (none) {
+                    var who = (s === 'active' ? 'active ' : s === 'inactive' ? 'inactive ' : '') + (r ? r.text.toLowerCase() + 's' : 'users');
+                    none.textContent = place ? 'No ' + who + ' in ' + place + '.' : 'Nobody matches.';
+                }
+            }
+            if (label && count) {
+                new MutationObserver(relabel).observe(count, { childList: true, characterData: true, subtree: true });
+                document.querySelectorAll('[data-md-filter]').forEach(function (f) { f.addEventListener('change', relabel); });
+                relabel();
+            }
+
+            // A person's Holding now / Requests / Past items, fetched the
+            // first time their panel shows (Users/Activity).
+            function loadActivity(panel) {
+                var box = panel && panel.querySelector('[data-ua-box]');
+                if (!box || box.dataset.loaded) return;
+                box.dataset.loaded = '1';
+                fetch(box.dataset.url, { credentials: 'same-origin' })
+                    .then(function (r) { if (!r.ok) throw new Error(); return r.text(); })
+                    .then(function (html) {
+                        box.innerHTML = html;
+                        var card = box.querySelector('.ua');
+                        var holding = parseInt(card.dataset.holding, 10) || 0;
+                        var late = parseInt(card.dataset.late, 10) || 0;
+                        panel.querySelector('[data-ua-holding]').innerHTML = holding + ' item' + (holding === 1 ? '' : 's') +
+                            (late ? ' <span class="rp-late d-inline">· ' + late + ' late</span>' : '');
+                        box.querySelectorAll('[data-pager]').forEach(function (p) { sabPager(p); });
+                    })
+                    .catch(function () {
+                        box.dataset.loaded = '';
+                        box.innerHTML = '<div class="asset-card"><div class="sab-empty"><p class="mb-0">Couldn\u2019t load their items. Pick them again to retry.</p></div></div>';
+                    });
+            }
+            function visiblePanel() { return document.querySelector('.myassets-panel[data-user]:not([hidden])'); }
+            loadActivity(visiblePanel());
+            document.querySelectorAll('.myassets-item[data-entry]').forEach(function (b) {
+                b.addEventListener('click', function () { setTimeout(function () { loadActivity(visiblePanel()); }, 0); });
+            });
+
+            // Tabs and search inside the loaded card.
+            document.addEventListener('click', function (e) {
+                var tab = e.target.closest('[data-ua-tab]');
+                if (!tab) return;
+                var card = tab.closest('.ua');
+                card.querySelectorAll('[data-ua-tab]').forEach(function (t) { t.classList.toggle('active', t === tab); });
+                card.querySelectorAll('[data-ua-pane]').forEach(function (p) { p.hidden = p.dataset.uaPane !== tab.dataset.uaTab; });
+            });
+            document.addEventListener('input', function (e) {
+                if (!e.target.matches('[data-ua-search]')) return;
+                var q = e.target.value.trim().toLowerCase();
+                e.target.closest('.ua').querySelectorAll('[data-ua-pane]').forEach(function (pane) {
+                    pane.querySelectorAll('[data-pager-item]').forEach(function (r) {
+                        r.toggleAttribute('data-pager-out', !!q && r.dataset.search.indexOf(q) === -1);
+                    });
+                    pane.dispatchEvent(new Event('pager-refresh'));
+                });
+            });
+        });
+    </script>
+}

@@ -1,0 +1,26 @@
+@model (int RequestId, byte[] RowVersion, string ModalId, bool HasOrders)
+@* Purchasing rejects a requisition it cannot buy (no supplier has it, too
+   costly...): with a reason, which the requester is sent. Its own form, so
+   it can sit outside the purchase order form. *@
+<div class="modal fade" id="@Model.ModalId" tabindex="-1" aria-labelledby="@(Model.ModalId)-title" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <form asp-controller="NewItemRequests" asp-action="Reject" asp-route-id="@Model.RequestId" asp-route-returnTo="purchasing" method="post" class="modal-content cancel-modal">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="rowVersionBase64" value="@RowVersionHelper.ToBase64(Model.RowVersion)" />
+            <div class="modal-header">
+                <h3 class="cancel-title" id="@(Model.ModalId)-title">Reject requisition #@Model.RequestId</h3>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <label class="form-label" for="@(Model.ModalId)-why">Why it can't be bought</label>
+                <textarea id="@(Model.ModalId)-why" name="remarks" class="form-control" rows="3" maxlength="500" required
+                          placeholder="e.g. No supplier has it; out of this term's budget."></textarea>
+                <div class="form-text">The requester is told, with this reason. Nothing on it is bought.@(Model.HasOrders ? " Its purchase orders stay on record, and no longer count against the budget." : "")</div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Keep it</button>
+                <button type="submit" class="btn btn-danger">Reject requisition</button>
+            </div>
+        </form>
+    </div>
+</div>

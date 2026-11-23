@@ -1,0 +1,217 @@
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@using SchoolInventoryManagement.Web.Helpers
+@{
+    ViewData["Title"] = "Incoming deliveries";
+    // What Purchasing ordered and the Property Department is waiting for,
+    // received here as well as on Requisition; and what came in but is not
+    // registered or in stock yet.
+    List<NewItemRequestResponseDTO> waiting = (ViewBag.Waiting as List<NewItemRequestResponseDTO>) ?? new();
+    List<NewItemRequestResponseDTO> putAway = (ViewBag.PutAway as List<NewItemRequestResponseDTO>) ?? new();
+    Dictionary<int, string> deptBranches = (ViewBag.DepartmentBranches as Dictionary<int, string>) ?? new();
+    var tab = ViewBag.Tab as string == "putaway" ? "putaway" : "waiting";
+    var today = PhilippineTime.Today;
+
+    string BranchOf(NewItemRequestResponseDTO r) => deptBranches.TryGetValue(r.DepartmentID, out var b) ? b : "";
+    int Since(NewItemRequestResponseDTO r) => (today - (r.Steps.LastOrDefault()?.ActedAt ?? r.RequestDate).Date).Days;
+    string Days(int d) => d <= 0 ? "today" : d == 1 ? "1 day" : $"{d} days";
+    string Search(NewItemRequestResponseDTO r) =>
+        $"#{r.NewItemRequestID} {string.Join(' ', r.Items.Select(i => i.ItemName))} {string.Join(' ', r.PurchaseOrders.Select(p => p.PONumber + " " + p.SupplierName))} {r.RequestedByUserName} {r.DepartmentName}".ToLowerInvariant();
+    string Plural(int n, string word) => $"{n} {word}{(n == 1 ? "" : "s")}";
+}
+
+@if (TempData["ErrorMessage"] != null)
+{
+    <div class="alert alert-danger">@TempData["ErrorMessage"]</div>
+}
+@if (TempData["StatusMessage"] != null)
+{
+    <div class="alert alert-success">@TempData["StatusMessage"]</div>
+}
+
+<div class="asset-detail-head mb-3 pb-0 border-0">
+    <div>
+        <h2 class="asset-detail-title">Incoming deliveries</h2>
+        <div class="asset-detail-sub">What Purchasing ordered from suppliers for requisitions. When it arrives, mark it received, then register the units or add them to stock.</div>
+    </div>
+    <div class="asset-detail-actions">
+        <a asp-controller="Assets" asp-action="Index" class="btn btn-outline-secondary">&larr; Property</a>
+    </div>
+</div>
+
+<div class="page-tabs" role="tablist">
+    <button type="button" class="@(tab == "waiting" ? "active" : "")" role="tab" aria-selected="@(tab == "waiting" ? "true" : "false")" data-md-tab="inWaiting">
+        Waiting for the supplier <span class="history-tab-count">@waiting.Count</span>
+    </button>
+    <button type="button" class="@(tab == "putaway" ? "active" : "")" role="tab" aria-selected="@(tab == "putaway" ? "true" : "false")" data-md-tab="inPutAway">
+        Received, still to put away <span class="history-tab-count">@putAway.Count</span>
+    </button>
+</div>
+
+@{
+    // The head of a delivery card: the order(s), the supplier and whose it is.
+    async Task Head(NewItemRequestResponseDTO r, bool received)
+    {
+        var late = r.NeededBy is DateTime nb && nb.Date < today;
+        var suppliers = r.PurchaseOrders.Select(p => p.SupplierName).Distinct().ToList();
+        <div class="incoming-head">
+            <div class="min-w-0">
+                <div class="incoming-meta">
+                    <span class="md-tag @(r.ItemKind == CategoryKind.Supply ? "is-supply" : "")">@(r.ItemKind == CategoryKind.Supply ? "Consumables" : "Fixed assets")</span>
+                    Requisition #@r.NewItemRequestID &middot; @r.RequestedByUserName &middot; @r.DepartmentName@(BranchOf(r) is { Length: > 0 } br ? " (" + br + ")" : "")
+                </div>
+                <div class="incoming-title">@(suppliers.Count == 0 ? "No purchase order" : "From " + string.Join(", ", suppliers))</div>
+                <div class="incoming-orders">
+                    @foreach (var po in r.PurchaseOrders)
+                    {
+                        <a asp-controller="Purchasing" asp-action="Order" asp-route-id="@po.PurchaseOrderID" class="asset-code-chip" title="View purchase order">@po.PONumber</a>
+                        <span class="text-muted small">ordered @po.OrderDate.ToString("MMM d") &middot; ₱@po.Total.ToString("N2")</span>
+                    }
+                </div>
+            </div>
+            <div class="incoming-when">
+                <span class="md-age @(late ? "is-late" : "")">@(late ? "late · " : "")@(received ? "received " : "ordered ")@Days(Since(r))@(Since(r) > 0 ? " ago" : "")</span>
+                @if (r.NeededBy is DateTime needed)
+                {
+                    <small class="d-block text-muted mt-1">Needed by @needed.ToString("MMM d, yyyy")</small>
+                }
+                <small class="d-block text-muted">Goes to @(r.DeliverToText ?? r.DepartmentName)</small>
+            </div>
+        </div>
+    }
+}
+
+<section id="inWaiting" role="tabpanel" hidden="@(tab != "waiting")">
+    @if (waiting.Count == 0)
+    {
+        <div class="sab-table-card incoming-empty">
+            <strong>Nothing on its way.</strong>
+            <span>When Purchasing orders items for a requisition, they show here until you receive them.</span>
+        </div>
+    }
+    else
+    {
+        <div class="incoming-tools">
+            <label class="asset-search">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                <input type="text" data-incoming-search autocomplete="off" placeholder="Item, supplier, PO or #..." aria-label="Search incoming deliveries" />
+            </label>
+        </div>
+        @foreach (var r in waiting)
+        {
+            var coming = r.Items.Where(i => i.ToBuy > 0).ToList();
+            <article class="sab-table-card incoming-card" id="in-@r.NewItemRequestID" data-search="@Search(r)">
+                @{ await Head(r, false); }
+                <div class="table-responsive">
+                    <table class="table asset-table mb-0">
+                        <thead><tr><th>Coming</th><th>Description</th><th class="text-end">Qty</th></tr></thead>
+                        <tbody>
+                            @foreach (var i in coming)
+                            {
+                                var qty = i.Ordered > 0 ? i.Ordered : i.ToBuy;
+                                <tr>
+                                    <td class="fw-semibold">@i.ItemName</td>
+                                    <td class="text-muted">@(string.IsNullOrWhiteSpace(i.Description) ? "—" : i.Description)</td>
+                                    <td class="text-end text-nowrap">@qty@(string.IsNullOrWhiteSpace(i.Unit) ? "" : " " + SupplyText.Unit(qty, i.Unit))</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                @if (r.Items.Any(i => i.FromStock > 0))
+                {
+                    <div class="incoming-note">Also on it, from stock: @string.Join(", ", r.Items.Where(i => i.FromStock > 0).Select(i => $"{i.ItemName} ×{i.FromStock}")). That is picked after receiving.</div>
+                }
+                <form asp-action="Advance" asp-route-id="@r.NewItemRequestID" asp-route-returnTo="incoming" method="post" class="incoming-actions"
+                      onsubmit="return confirm('Mark requisition #@r.NewItemRequestID as received from the supplier? Next you register the units or add them to stock.');">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="rowVersionBase64" value="@RowVersionHelper.ToBase64(r.RowVersion)" />
+                    <input type="text" name="remarks" maxlength="500" class="form-control" placeholder="Remarks (optional), e.g. delivery receipt no., 1 box dented" aria-label="Remarks for requisition #@r.NewItemRequestID" />
+                    <div class="req-action-buttons">
+                        <a href="@Url.Action("Pending", new { open = r.NewItemRequestID })#n-@r.NewItemRequestID" class="btn btn-outline-secondary">Open requisition</a>
+                        <button type="submit" class="btn btn-primary">&#10003; Received from supplier</button>
+                    </div>
+                </form>
+            </article>
+        }
+        <div class="incoming-empty sab-table-card" data-incoming-none hidden><span>No delivery matches.</span></div>
+    }
+</section>
+
+<section id="inPutAway" role="tabpanel" hidden="@(tab != "putaway")">
+    @if (putAway.Count == 0)
+    {
+        <div class="sab-table-card incoming-empty">
+            <strong>Nothing left to put away.</strong>
+            <span>Received deliveries show here until their units are registered or added to stock.</span>
+        </div>
+    }
+    else
+    {
+        @foreach (var r in putAway)
+        {
+            var todo = NewItemProgress.StillToDo(r);
+            <article class="sab-table-card incoming-card" id="pa-@r.NewItemRequestID">
+                @{ await Head(r, true); }
+                <div class="table-responsive">
+                    <table class="table asset-table mb-0">
+                        <thead><tr><th>Received</th><th class="text-end">Bought</th><th class="text-end">@(r.ItemKind == CategoryKind.Supply ? "In stock" : "Registered")</th></tr></thead>
+                        <tbody>
+                            @foreach (var i in r.Items.Where(i => i.ToBuy > 0))
+                            {
+                                var done = r.ItemKind == CategoryKind.Supply ? i.AddedToStock : i.Registered;
+                                <tr>
+                                    <td class="fw-semibold">@i.ItemName</td>
+                                    <td class="text-end">@i.ToBuy</td>
+                                    <td class="text-end @(done >= i.ToBuy ? "text-success" : "")">@Math.Min(done, i.ToBuy)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="incoming-actions">
+                    <span class="incoming-note mb-0">Then send it out from the requisition.</span>
+                    <div class="req-action-buttons">
+                        <a href="@Url.Action("Pending", new { open = r.NewItemRequestID })#n-@r.NewItemRequestID" class="btn btn-outline-secondary">Open requisition</a>
+                        @if (todo.Register > 0)
+                        {
+                            <a asp-controller="Assets" asp-action="BulkCreate" asp-route-newItemRequestId="@r.NewItemRequestID" asp-route-returnTo="approvals" class="btn btn-primary">@NewItemProgress.RegisterLabel(r) &rarr;</a>
+                        }
+                        @if (todo.AddToStock > 0)
+                        {
+                            <a asp-controller="Supplies" asp-action="AddStock" asp-route-newItemRequestId="@r.NewItemRequestID" asp-route-returnTo="approvals" class="btn btn-primary">Add @todo.AddToStock bought to stock &rarr;</a>
+                        }
+                    </div>
+                </div>
+            </article>
+        }
+    }
+</section>
+
+@section Scripts {
+    <script>
+        (function () {
+            // The two tabs (this page has no list + detail, so site.js leaves them).
+            var tabs = Array.from(document.querySelectorAll('[data-md-tab]'));
+            tabs.forEach(function (t) {
+                t.addEventListener('click', function () {
+                    tabs.forEach(function (x) {
+                        var on = x === t;
+                        x.classList.toggle('active', on); x.setAttribute('aria-selected', on ? 'true' : 'false');
+                        document.getElementById(x.dataset.mdTab).hidden = !on;
+                    });
+                });
+            });
+            // Search the waiting deliveries.
+            var box = document.querySelector('[data-incoming-search]');
+            if (!box) return;
+            var cards = Array.from(document.querySelectorAll('#inWaiting [data-search]'));
+            var none = document.querySelector('[data-incoming-none]');
+            box.addEventListener('input', function () {
+                var q = box.value.trim().toLowerCase(), shown = 0;
+                cards.forEach(function (c) { var hit = !q || c.dataset.search.indexOf(q) >= 0; c.hidden = !hit; if (hit) shown++; });
+                if (none) none.hidden = shown > 0;
+            });
+        })();
+    </script>
+}

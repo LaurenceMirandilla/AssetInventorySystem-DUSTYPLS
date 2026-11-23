@@ -1,0 +1,530 @@
+@model List<SchoolInventoryManagement.BLL.DTOs.NewItemRequestResponseDTO>
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.DAL.Constants
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@{
+    ViewData["Title"] = "Purchasing";
+    // Purchasing (Scripts/031), laid out like the other lists: tabs, a list
+    // with search and Filters on the left, the picked one on the right.
+    //   To buy: requisitions with something Property's stock could not cover.
+    //   Ordered: everything on purchase orders, waiting for the supplier.
+    //   Purchase orders: every order made, newest first.
+    var toBuy = Model.Where(r => r.RequestStatus == NewItemStatus.Procuring).ToList();
+    var ordered = Model.Where(r => r.RequestStatus == NewItemStatus.AwaitingArrival).ToList();
+    List<PurchaseOrderListDTO> orders = (ViewBag.Orders as List<PurchaseOrderListDTO>) ?? new List<PurchaseOrderListDTO>();
+    Dictionary<int, string> deptBranches = (ViewBag.DepartmentBranches as Dictionary<int, string>) ?? new Dictionary<int, string>();
+    string BranchOf(NewItemRequestResponseDTO r) => deptBranches.TryGetValue(r.DepartmentID, out var b) ? b : "";
+    var tab = ViewBag.Tab as string ?? "buy";
+    int? newOrder = ViewBag.NewOrder as int?;
+    var me = int.Parse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)!.Value);
+    var today = PhilippineTime.Today;
+
+    string Status(NewItemStatus s) => s switch
+    {
+        NewItemStatus.Procuring => "More to order",
+        NewItemStatus.AwaitingArrival => "Waiting for the supplier",
+        NewItemStatus.Arrived => "Received by Property",
+        NewItemStatus.Delivered => "Delivered",
+        NewItemStatus.Cancelled => "Cancelled",
+        NewItemStatus.Rejected => "Rejected",
+        _ => DisplayText.Stage(s)
+    };
+    string StatusKey(NewItemStatus s) => s switch
+    {
+        NewItemStatus.Procuring => "more",
+        NewItemStatus.AwaitingArrival => "waiting",
+        NewItemStatus.Arrived => "received",
+        NewItemStatus.Delivered => "delivered",
+        _ => "stopped"
+    };
+    // A purchase order's own state first (Scripts/037): a draft not printed
+    // yet, or cancelled; a printed one shows where its requisition is.
+    string OrderStatus(PurchaseOrderListDTO o) => o.Status switch
+    {
+        "Draft" => "Draft · not printed",
+        "Cancelled" => "Cancelled",
+        _ => Status(o.RequestStatus)
+    };
+    string OrderKey(PurchaseOrderListDTO o) => o.Status switch
+    {
+        "Draft" => "draft",
+        "Cancelled" => "cancelled",
+        _ => StatusKey(o.RequestStatus)
+    };
+    bool Late(NewItemRequestResponseDTO r) => r.NeededBy is not null && r.NeededBy.Value.Date < today;
+    string Search(NewItemRequestResponseDTO r) =>
+        $"#{r.NewItemRequestID} {r.NewItemRequestID} {string.Join(' ', r.Items.Select(i => i.ItemName))} {r.Reason} {r.RequestedByUserName} {r.DepartmentName}".ToLowerInvariant();
+    string Peso(decimal v) => "₱" + v.ToString("N2");
+    // A purchase order on Purchase orders (this page), picked out.
+    string OrderUrl(int id) => Url.Action("Index", new { tab = "orders" }) + "#o-" + id;
+}
+
+@functions {
+    static string Initials(string name)
+    {
+        var s = string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(p => p[0])).ToUpperInvariant();
+        return s.Length > 2 ? s[..2] : s;
+    }
+}
+
+@if (TempData["ErrorMessage"] != null)
+{
+    <div class="alert alert-danger">@TempData["ErrorMessage"]</div>
+}
+
+<div class="asset-detail-head mb-3 pb-0 border-0">
+    <div>
+        <h2 class="asset-detail-title">Purchasing</h2>
+        <div class="asset-detail-sub">What requisitions are missing, to buy from suppliers. Make a purchase order, print it and bring it to the supplier; the Property Department receives the items.</div>
+    </div>
+    <div class="asset-detail-actions">
+        <a asp-controller="Suppliers" asp-action="Index" class="btn btn-outline-secondary">Suppliers</a>
+    </div>
+</div>
+
+<div class="page-tabs" role="tablist">
+    <button type="button" class="@(tab == "buy" ? "active" : "")" role="tab" aria-selected="@(tab == "buy" ? "true" : "false")" data-md-tab="pBuy">
+        To buy <span class="history-tab-count">@toBuy.Count</span>
+    </button>
+    <button type="button" class="@(tab == "ordered" ? "active" : "")" role="tab" aria-selected="@(tab == "ordered" ? "true" : "false")" data-md-tab="pOrdered">
+        Ordered, waiting for the supplier <span class="history-tab-count">@ordered.Count</span>
+    </button>
+    <button type="button" class="@(tab == "orders" ? "active" : "")" role="tab" aria-selected="@(tab == "orders" ? "true" : "false")" data-md-tab="pOrders">
+        Purchase orders <span class="history-tab-count">@orders.Count</span>
+    </button>
+</div>
+
+@{
+    // A list of requisitions and their panels (To buy and Ordered).
+    async Task RequisitionList(List<NewItemRequestResponseDTO> list, string prefix, bool toOrder)
+    {
+        <div class="sab-table-card myassets" data-md data-page-size="6">
+            <aside class="myassets-list" aria-label="@(toOrder ? "Requisitions to buy" : "Requisitions ordered")">
+                <div class="md-toolbar">
+                    <label class="asset-search">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                        <input type="text" data-md-search autocomplete="off" placeholder="Item, requester or #..." aria-label="Search requisitions" />
+                    </label>
+                    <div class="dropdown">
+                        <button type="button" class="asset-tool-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z" /></svg>
+                            Filters
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end md-filter-menu">
+                            <label class="form-label">Kind</label>
+                            <select class="form-select form-select-sm mb-2" data-md-filter="kind">
+                                <option value="">Any</option>
+                                <option value="asset">Fixed assets</option>
+                                <option value="supply">Consumables</option>
+                            </select>
+                            <label class="form-label">Needed</label>
+                            <select class="form-select form-select-sm mb-2" data-md-filter="due">
+                                <option value="">Any</option>
+                                <option value="late">Late</option>
+                                <option value="ontime">On time</option>
+                            </select>
+                            <label class="form-label">Branch</label>
+                            <div class="mb-2">
+                                <select class="form-select form-select-sm" data-md-filter="branch" data-combobox>
+                                    <option value="">Any</option>
+                                    @foreach (var d in list.Select(BranchOf).Where(d => !string.IsNullOrEmpty(d)).Distinct().OrderBy(d => d))
+                                    {
+                                        <option value="@d.ToLowerInvariant()">@d</option>
+                                    }
+                                </select>
+                            </div>
+                            <label class="form-label">Department</label>
+                            <select class="form-select form-select-sm" data-md-filter="dept" data-combobox>
+                                <option value="">Any</option>
+                                @foreach (var d in list.Select(r => r.DepartmentName).Where(d => !string.IsNullOrEmpty(d)).Distinct().OrderBy(d => d))
+                                {
+                                    <option value="@d.ToLowerInvariant()">@d</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="myassets-group" data-md-group>
+                    <div class="myassets-group-label group-late">Needed soonest first · <span data-md-count>@list.Count</span></div>
+                    @foreach (var r in list.OrderBy(r => r.NeededBy ?? DateTime.MaxValue).ThenBy(r => r.RequestDate))
+                    {
+                        var late = Late(r);
+                        var buy = r.Items.Where(i => i.ToBuy > 0).ToList();
+                        <button type="button" class="myassets-item" data-entry="@prefix-@r.NewItemRequestID" data-search="@Search(r)"
+                                data-kind="@r.ItemKind.ToString().ToLowerInvariant()" data-due="@(late ? "late" : "ontime")"
+                                data-dept="@r.DepartmentName.ToLowerInvariant()" data-branch="@BranchOf(r).ToLowerInvariant()">
+                            <span class="md-avatar @(late ? "is-dark" : "")">@Initials(r.RequestedByUserName)</span>
+                            <span class="myassets-item-main">
+                                <span class="myassets-item-title">@r.RequestedByUserName</span>
+                                <span class="myassets-item-sub">@string.Join(", ", buy.Select(i => $"{i.ItemName} ×{i.ToBuy}"))</span>
+                                <span class="md-tags">
+                                    <span class="md-tag is-newitem">#@r.NewItemRequestID</span>
+                                    @NewItemProgress.Kind(r) · @r.DepartmentName
+                                </span>
+                            </span>
+                            <span class="md-age @(late ? "is-late" : "")">@(r.NeededBy is null ? "no date" : (late ? "late · " : "") + r.NeededBy.Value.ToString("MMM d"))</span>
+                        </button>
+                    }
+                </div>
+                <div class="myassets-nomatch" data-md-empty hidden>Nothing matches your search or filters.</div>
+
+                <div class="md-foot">
+                    <span data-md-range></span>
+                    <div data-md-pager></div>
+                </div>
+            </aside>
+
+            <section class="myassets-detail">
+                @foreach (var r in list)
+                {
+                    var late = Late(r);
+                    var mine = r.RequestedByUserID == me;
+                    var toBuyUnits = r.Items.Sum(i => i.ToBuy);
+                    var drafts = r.PurchaseOrders.Count(p => p.IsDraft);
+                    <article class="myassets-panel" data-panel="@prefix-@r.NewItemRequestID" hidden>
+                        <button type="button" class="myassets-back" data-back>&larr; All requisitions</button>
+
+                        <div class="myassets-panel-head">
+                            <div class="md-person">
+                                <span class="md-avatar md-avatar-lg">@Initials(r.RequestedByUserName)</span>
+                                <div class="min-w-0">
+                                    <div class="myassets-panel-meta">
+                                        <span class="md-tag is-newitem">Requisition</span>
+                                        <span class="md-tag">@NewItemProgress.Kind(r)</span>
+                                        <span>#@r.NewItemRequestID · submitted @r.RequestDate.ToString("MMM d, yyyy")</span>
+                                    </div>
+                                    <h3 class="md-person-name">@r.RequestedByUserName <small>· @(r.RequestedByRoleName ?? "") · @r.DepartmentName</small></h3>
+                                </div>
+                            </div>
+                            <div class="myassets-panel-actions">
+                                @if (late) {<span class="md-age is-late">Late</span>}
+                                <a asp-controller="NewItemRequests" asp-action="Details" asp-route-id="@r.NewItemRequestID" class="btn btn-outline-secondary">View &rarr;</a>
+                            </div>
+                        </div>
+
+                        <div class="myassets-stats">
+                            <div class="@(late ? "is-late" : "")"><span>Needed by</span><strong>@DisplayText.Or(r.NeededBy?.ToString("MMM d, yyyy"), "No date given")</strong></div>
+                            <div><span>To buy</span><strong>@toBuyUnits unit@(toBuyUnits == 1 ? "" : "s")</strong></div>
+                            <div><span>Left to order</span><strong>@r.LeftToOrder</strong></div>
+                            <div><span>Goes to</span><strong>@DisplayText.Or(r.DeliverToText, r.DepartmentName)</strong></div>
+                        </div>
+
+                        <h4 class="md-section-title">What is missing</h4>
+                        <div class="ni-ticket">
+                            <table class="ni-ticket-table">
+                                <thead>
+                                    <tr><th>Item</th><th class="num">Asked</th><th class="num">From stock</th><th class="num">To buy</th><th class="num">Ordered</th><th class="num">Left</th></tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var i in r.Items)
+                                    {
+                                        <tr class="@(i.ToBuy == 0 ? "text-muted" : "")">
+                                            <td class="ni-ticket-name">@i.ItemName@if (!string.IsNullOrWhiteSpace(i.Description)) {<small class="ni-ticket-kind">@i.Description</small>}</td>
+                                            <td class="num" data-label="Asked">@i.Quantity</td>
+                                            <td class="num" data-label="From stock">@i.FromStock</td>
+                                            <td class="num fw-semibold" data-label="To buy">@i.ToBuy</td>
+                                            <td class="num" data-label="Ordered">@i.Ordered</td>
+                                            <td class="num @(i.LeftToOrder > 0 ? "fw-semibold" : "")" data-label="Left">@i.LeftToOrder</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(r.Reason))
+                        {
+                            <div class="req-note"><strong>Reason:</strong> @r.Reason</div>
+                        }
+                        @if (r.PurchaseOrders.Any())
+                        {
+                            <div class="req-note"><strong>Purchase orders:</strong>
+                                @foreach (var po in r.PurchaseOrders)
+                                {
+                                    <a href="@OrderUrl(po.PurchaseOrderID)" class="asset-code-chip ms-1" title="View @po.PONumber">@po.PONumber · @po.SupplierName@(po.IsDraft ? " · draft" : "")</a>
+                                }
+                            </div>
+                        }
+
+                        <div class="req-action @(late ? "is-late" : "")">
+                            <div>
+                                <div class="req-action-title">
+                                    @(toOrder ? (mine ? "Your own requisition" : r.LeftToOrder > 0 ? $"{r.LeftToOrder} left to order" : drafts > 0 ? $"{drafts} purchase order{(drafts == 1 ? "" : "s")} to print" : "Everything is ordered") : "Waiting for the supplier")
+                                </div>
+                                <div class="req-action-note">
+                                    @(toOrder
+                                        ? (mine ? "Another Purchasing Officer buys it." : r.LeftToOrder > 0 ? "Make a purchase order for what is left; split it over several suppliers if you need to." : "Open each draft and print it. Once everything is printed, the requisition waits for the supplier.")
+                                        : "The Property Department receives it from the supplier.")
+                                </div>
+                            </div>
+                            <div class="req-action-buttons pu-po-buttons">
+                                @* Its purchase orders, each opened on Purchase orders. *@
+                                @foreach (var po in r.PurchaseOrders)
+                                {
+                                    <a href="@OrderUrl(po.PurchaseOrderID)" class="btn @(toOrder && !mine && r.LeftToOrder > 0 ? "btn-outline-secondary" : "btn-primary")">@(r.PurchaseOrders.Count == 1 ? "View purchase order" : "View " + po.PONumber)@(po.IsDraft ? " (draft)" : "") &rarr;</a>
+                                }
+                                @if (toOrder && !mine)
+                                {
+                                    @* Can't be bought: rejected, with a reason. *@
+                                    <button type="button" class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#reject-@r.NewItemRequestID">Reject</button>
+                                }
+                                @if (toOrder && !mine && r.LeftToOrder > 0)
+                                {
+                                    <a asp-action="CreateOrder" asp-route-requestId="@r.NewItemRequestID" class="btn btn-primary">Make purchase order &rarr;</a>
+                                }
+                            </div>
+                        </div>
+                        @if (toOrder && !mine)
+                        {
+                            var rejectModel = (r.NewItemRequestID, r.RowVersion, "reject-" + r.NewItemRequestID, r.PurchaseOrders.Any());
+                            <partial name="_RejectRequisition" model="rejectModel" />
+                        }
+                    </article>
+                }
+            </section>
+        </div>
+    }
+}
+
+@* ---- To buy ---- *@
+<section id="pBuy" role="tabpanel" hidden="@(tab != "buy")">
+    @if (!toBuy.Any())
+    {
+        <div class="sab-table-card"><div class="sab-empty"><div class="sab-empty-title">Nothing to buy</div><p>Requisitions with something missing from stock show up here.</p></div></div>
+    }
+    else
+    {
+        await RequisitionList(toBuy, "b", true);
+    }
+</section>
+
+@* ---- Ordered, waiting for the supplier ---- *@
+<section id="pOrdered" role="tabpanel" hidden="@(tab != "ordered")">
+    @if (!ordered.Any())
+    {
+        <div class="sab-table-card"><div class="sab-empty"><div class="sab-empty-title">Nothing on the way</div><p>Requisitions whose missing items are all on purchase orders show up here until Property receives them.</p></div></div>
+    }
+    else
+    {
+        await RequisitionList(ordered, "w", false);
+    }
+</section>
+
+@* ---- Purchase orders ---- *@
+<section id="pOrders" role="tabpanel" hidden="@(tab != "orders")">
+    @if (!orders.Any())
+    {
+        <div class="sab-table-card"><div class="sab-empty"><div class="sab-empty-title">No purchase orders yet</div><p>Make one from To buy.</p></div></div>
+    }
+    else
+    {
+        <div class="sab-table-card myassets" data-md data-page-size="8">
+            <aside class="myassets-list" aria-label="Purchase orders">
+                <div class="md-toolbar">
+                    <label class="asset-search">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                        <input type="text" data-md-search autocomplete="off" placeholder="PO #, supplier, item or requisition..." aria-label="Search purchase orders" />
+                    </label>
+                    <div class="dropdown">
+                        <button type="button" class="asset-tool-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z" /></svg>
+                            Filters
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end md-filter-menu">
+                            <label class="form-label">Status</label>
+                            <select class="form-select form-select-sm mb-2" data-md-filter="status">
+                                <option value="">Any</option>
+                                @foreach (var g in orders.GroupBy(OrderKey).OrderBy(g => g.Key == "draft" ? 0 : g.Key == "cancelled" ? 2 : 1))
+                                {
+                                    <option value="@g.Key">@OrderStatus(g.First()) (@g.Count())</option>
+                                }
+                            </select>
+                            <label class="form-label">Supplier</label>
+                            <div class="mb-2">
+                                <select class="form-select form-select-sm" data-md-filter="supplier" data-combobox>
+                                    <option value="">Any</option>
+                                    @foreach (var s in orders.Select(o => o.SupplierName).Distinct().OrderBy(s => s))
+                                    {
+                                        <option value="@s.ToLowerInvariant()">@s</option>
+                                    }
+                                </select>
+                            </div>
+                            <label class="form-label">Made by</label>
+                            <select class="form-select form-select-sm mb-2" data-md-filter="maker">
+                                <option value="">Anyone</option>
+                                <option value="@me">Me</option>
+                                @foreach (var p in orders.Where(o => o.PreparedByUserID != me).Select(o => (o.PreparedByUserID, o.PreparedByName)).Distinct().OrderBy(p => p.PreparedByName))
+                                {
+                                    <option value="@p.PreparedByUserID">@p.PreparedByName</option>
+                                }
+                            </select>
+                            <label class="form-label">Branch</label>
+                            <div class="mb-2">
+                                <select class="form-select form-select-sm" data-md-filter="branch" data-combobox>
+                                    <option value="">Any</option>
+                                    @foreach (var d in orders.Select(o => o.BranchName).Where(d => !string.IsNullOrEmpty(d)).Distinct().OrderBy(d => d))
+                                    {
+                                        <option value="@d.ToLowerInvariant()">@d</option>
+                                    }
+                                </select>
+                            </div>
+                            <label class="form-label">Department</label>
+                            <select class="form-select form-select-sm" data-md-filter="dept" data-combobox>
+                                <option value="">Any</option>
+                                @foreach (var d in orders.Select(o => o.DepartmentName).Distinct().OrderBy(d => d))
+                                {
+                                    <option value="@d.ToLowerInvariant()">@d</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="myassets-group" data-md-group>
+                    <div class="myassets-group-label group-transit">Newest first · <span data-md-count>@orders.Count</span></div>
+                    @foreach (var o in orders)
+                    {
+                        <button type="button" class="myassets-item @(o.PurchaseOrderID == newOrder ? "pu-new" : "")" data-entry="o-@o.PurchaseOrderID"
+                                data-search="@($"{o.PONumber} {o.SupplierName} {o.Items} #{o.NewItemRequestID} {o.NewItemRequestID} {o.RequestedByUserName} {o.DepartmentName}".ToLowerInvariant())"
+                                data-status="@OrderKey(o)" data-supplier="@o.SupplierName.ToLowerInvariant()" data-maker="@o.PreparedByUserID"
+                                data-branch="@o.BranchName.ToLowerInvariant()" data-dept="@o.DepartmentName.ToLowerInvariant()">
+                            <span class="md-avatar">PO</span>
+                            <span class="myassets-item-main">
+                                <span class="myassets-item-title">@o.PONumber@if (o.PurchaseOrderID == newOrder) {<span class="pu-new-tag">new</span>}</span>
+                                <span class="myassets-item-sub">@o.SupplierName · @o.Items</span>
+                                <span class="md-tags">
+                                    <span class="md-tag is-newitem">#@o.NewItemRequestID</span>
+                                    @if (o.Status == "Draft") {<span class="md-tag is-draft">Draft</span>}
+                                    @if (o.Status == "Cancelled") {<span class="md-tag is-cancelled">Cancelled</span>}
+                                    @(o.Status == "Printed" ? Status(o.RequestStatus) : "")
+                                </span>
+                            </span>
+                            <span class="myassets-item-due @(o.Status == "Cancelled" ? "text-decoration-line-through" : "")">@Peso(o.Total)<small class="d-block text-muted">@o.OrderDate.ToString("MMM d")</small></span>
+                        </button>
+                    }
+                </div>
+                <div class="myassets-nomatch" data-md-empty hidden>Nothing matches your search or filters.</div>
+
+                <div class="md-foot">
+                    <span data-md-range></span>
+                    <div data-md-pager></div>
+                </div>
+            </aside>
+
+            <section class="myassets-detail">
+                @foreach (var o in orders)
+                {
+                    var subtotal = o.Lines.Sum(l => l.Amount);
+                    <article class="myassets-panel" data-panel="o-@o.PurchaseOrderID" hidden>
+                        <button type="button" class="myassets-back" data-back>&larr; All purchase orders</button>
+
+                        <div class="myassets-panel-head">
+                            <div class="md-person">
+                                <span class="md-avatar md-avatar-lg">PO</span>
+                                <div class="min-w-0">
+                                    <div class="myassets-panel-meta">
+                                        <span class="md-tag is-newitem">Purchase order</span>
+                                        <span>@o.OrderDate.ToString("MMM d, yyyy") · by @(o.PreparedByUserID == me ? "you" : o.PreparedByName)</span>
+                                    </div>
+                                    <h3 class="md-person-name">@o.PONumber <small>· @o.SupplierName</small></h3>
+                                </div>
+                            </div>
+                            <div class="myassets-panel-actions">
+                                @if (o.CanEdit)
+                                {
+                                    <a asp-action="EditOrder" asp-route-id="@o.PurchaseOrderID" class="btn btn-outline-secondary">Edit</a>
+                                    <form asp-action="CancelOrder" asp-route-id="@o.PurchaseOrderID" method="post" class="d-inline" data-cancel-po="@o.PONumber">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="reason" />
+                                        <button type="submit" class="btn btn-outline-danger">Cancel order</button>
+                                    </form>
+                                }
+                                else if (o.Status == "Printed")
+                                {
+                                    <button type="button" class="btn btn-outline-secondary" disabled title="Printed: it can no longer be changed">Edit</button>
+                                    <button type="button" class="btn btn-outline-danger" disabled title="Printed: it can no longer be cancelled">Cancel order</button>
+                                }
+                                @if (o.Status != "Cancelled")
+                                {
+                                    <form asp-action="AttachReceipt" asp-route-id="@o.PurchaseOrderID" method="post" enctype="multipart/form-data" class="d-inline" data-receipt-form>
+                                        @Html.AntiForgeryToken()
+                                        <input type="file" name="receipt" accept="@FileUploads.DocumentAccept" data-max-bytes="@FileUploads.MaxBytes" hidden data-receipt-file />
+                                        <button type="button" class="btn btn-outline-secondary" data-receipt-pick>Attach receipt</button>
+                                    </form>
+                                }
+                                <a asp-action="Order" asp-route-id="@o.PurchaseOrderID" class="btn btn-primary">Open purchase order</a>
+                            </div>
+                        </div>
+
+                        <div class="myassets-stats">
+                            <div><span>Total</span><strong>@Peso(o.Total)</strong></div>
+                            <div class="@(o.Status == "Cancelled" ? "is-late" : "")"><span>Status</span><strong>@OrderStatus(o)</strong></div>
+                            <div><span>For</span><strong><a asp-controller="NewItemRequests" asp-action="Details" asp-route-id="@o.NewItemRequestID">Requisition #@o.NewItemRequestID</a></strong></div>
+                            <div><span>Requested by</span><strong>@o.RequestedByUserName</strong></div>
+                        </div>
+
+                        <h4 class="md-section-title">On the order</h4>
+                        <div class="ni-ticket">
+                            <table class="ni-ticket-table">
+                                <thead>
+                                    <tr><th>Item</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var l in o.Lines)
+                                    {
+                                        <tr>
+                                            <td class="ni-ticket-name">@l.ItemName@if (!string.IsNullOrWhiteSpace(l.Description)) {<small class="ni-ticket-kind">@l.Description</small>}</td>
+                                            <td class="num" data-label="Qty">@l.Quantity@(string.IsNullOrWhiteSpace(l.Unit) ? "" : " " + SupplyText.Unit(l.Quantity, l.Unit))</td>
+                                            <td class="num" data-label="Unit price">@Peso(l.UnitPrice)</td>
+                                            <td class="num" data-label="Amount">@Peso(l.Amount)</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                                <tfoot>
+                                    <tr><td colspan="3" class="num">Subtotal</td><td class="num">@Peso(subtotal)</td></tr>
+                                    @if (o.Extras != 0) {<tr><td colspan="3" class="num">Tax, shipping and other</td><td class="num">@Peso(o.Extras)</td></tr>}
+                                    <tr><td colspan="3" class="num fw-bold">Total</td><td class="num fw-bold">@Peso(o.Total)</td></tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                        <div class="req-note"><strong>For:</strong> @o.DepartmentName · @o.BranchName</div>
+                        @if (o.Status == "Draft")
+                        {
+                            <div class="req-note"><strong>Not printed yet.</strong> Open the purchase order and print it to bring to the supplier. Once printed it can no longer be edited or cancelled.</div>
+                        }
+                        else if (o.Status == "Printed")
+                        {
+                            <div class="req-note"><strong>Printed</strong>@(o.PrintedAt is null ? "" : " " + o.PrintedAt.Value.ToString("MMM d, yyyy")) · @(o.Attachments == 0 ? "no receipt attached yet" : o.Attachments == 1 ? "1 receipt attached" : o.Attachments + " receipts attached")</div>
+                        }
+                    </article>
+                }
+            </section>
+        </div>
+    }
+</section>
+
+@section Scripts {
+    <script>
+        (function () {
+            // Cancel order: asks first, with an optional reason.
+            document.querySelectorAll('[data-cancel-po]').forEach(function (f) {
+                f.addEventListener('submit', function (e) {
+                    var why = prompt('Cancel ' + f.dataset.cancelPo + '? Its items become to buy again. Reason (optional):', '');
+                    if (why === null) { e.preventDefault(); return; }
+                    f.querySelector('[name=reason]').value = why;
+                });
+            });
+            // Attach receipt: pick a file, sent straight away.
+            document.querySelectorAll('[data-receipt-form]').forEach(function (f) {
+                var file = f.querySelector('[data-receipt-file]');
+                f.querySelector('[data-receipt-pick]').addEventListener('click', function () { file.click(); });
+                file.addEventListener('change', function () {
+                    if (!file.files.length) return;
+                    var max = parseInt(file.dataset.maxBytes, 10) || 0;
+                    if (max && file.files[0].size > max) { alert('The receipt is too big. The limit is ' + Math.round(max / 1048576) + ' MB.'); file.value = ''; return; }
+                    f.submit();
+                });
+            });
+        })();
+    </script>
+}

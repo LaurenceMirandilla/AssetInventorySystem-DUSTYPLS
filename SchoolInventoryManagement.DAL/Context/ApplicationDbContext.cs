@@ -1,0 +1,774 @@
+﻿using Microsoft.EntityFrameworkCore;
+using SchoolInventoryManagement.DAL.Constants;
+using SchoolInventoryManagement.DAL.Entities;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+
+namespace SchoolInventoryManagement.DAL.Context
+{
+    public class ApplicationDbContext : DbContext
+    {
+        public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+            : base(options)
+        {
+        }
+
+        // Set for a save that writes its own AuditLog rows, so the audit
+        // interceptor does not add a second set credited to whoever is
+        // signed in. Used by the overdue check.
+        public bool SkipAutoAudit { get; set; }
+
+        public DbSet<Asset> Assets { get; set; } = null!;
+        public DbSet<User> Users { get; set; } = null!;
+        public DbSet<Role> Roles { get; set; } = null!;
+        public DbSet<Branch> Branches { get; set; } = null!;
+        public DbSet<Department> Departments { get; set; } = null!;
+        public DbSet<Location> Locations { get; set; } = null!;
+        public DbSet<Category> Categories { get; set; } = null!;
+        public DbSet<Supply> Supplies { get; set; } = null!;
+        public DbSet<SupplyStock> SupplyStock { get; set; } = null!;
+        public DbSet<SupplyBranchLevel> SupplyBranchLevels { get; set; } = null!;
+        public DbSet<SupplyTransaction> SupplyTransactions { get; set; } = null!;
+        public DbSet<SupplyRequest> SupplyRequests { get; set; } = null!;
+        public DbSet<SupplyRequestItem> SupplyRequestItems { get; set; } = null!;
+        public DbSet<AssetRequest> AssetRequests { get; set; } = null!;
+        public DbSet<AssetRequestItem> AssetRequestItems { get; set; } = null!;
+        public DbSet<AssetAssignment> AssetAssignments { get; set; } = null!;
+        public DbSet<AssetMovement> AssetMovements { get; set; } = null!;
+        public DbSet<DisposalRecord> DisposalRecords { get; set; } = null!;
+        public DbSet<AuditLog> AuditLogs { get; set; } = null!;
+        public DbSet<Notification> Notifications { get; set; } = null!;
+        public DbSet<Model> Models { get; set; } = null!;
+        public DbSet<NewItemRequest> NewItemRequests { get; set; } = null!;
+        public DbSet<NewItemRequestStep> NewItemRequestSteps { get; set; } = null!;
+        public DbSet<NewItemRequestItem> NewItemRequestItems { get; set; } = null!;
+        public DbSet<PurchaseOrder> PurchaseOrders { get; set; } = null!;
+        public DbSet<Supplier> Suppliers { get; set; } = null!;
+        public DbSet<PurchaseOrderLine> PurchaseOrderLines { get; set; } = null!;
+        public DbSet<PurchaseOrderAttachment> PurchaseOrderAttachments { get; set; } = null!;
+        public DbSet<NewItemRequestUnit> NewItemRequestUnits { get; set; } = null!;
+        public DbSet<AssetCount> AssetCounts { get; set; } = null!;
+        public DbSet<AssetCountLine> AssetCountLines { get; set; } = null!;
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            base.OnModelCreating(modelBuilder);
+
+            // =====================================================
+            // BRANCH → Department / Location / User / Asset
+            // (all inferred by EF from FK + nav properties, but
+            //  DeleteBehavior set explicitly on every relationship
+            //  per our "no cascading deletes" decision)
+            // =====================================================
+            modelBuilder.Entity<Department>()
+                .HasOne(d => d.Branch)
+                .WithMany(b => b.Departments)
+                .HasForeignKey(d => d.BranchID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // A department's rooms, and its main room (Scripts/029).
+            modelBuilder.Entity<Location>()
+                .HasOne(l => l.Department)
+                .WithMany(d => d.Rooms)
+                .HasForeignKey(l => l.DepartmentID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<Department>()
+                .HasOne(d => d.MainLocation)
+                .WithMany()
+                .HasForeignKey(d => d.MainLocationID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<Location>()
+                .HasOne(l => l.Branch)
+                .WithMany(b => b.Locations)
+                .HasForeignKey(l => l.BranchID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<User>()
+                .HasOne(u => u.Branch)
+                .WithMany(b => b.Users)
+                .HasForeignKey(u => u.BranchID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<Asset>()
+                .HasOne(a => a.Branch)
+                .WithMany(b => b.Assets)
+                .HasForeignKey(a => a.BranchID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // DEPARTMENT → User / Asset / AssetRequest
+            // =====================================================
+            modelBuilder.Entity<User>()
+                .HasOne(u => u.Department)
+                .WithMany(d => d.Users)
+                .HasForeignKey(u => u.DepartmentID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<Asset>()
+                .HasOne(a => a.Department)
+                .WithMany(d => d.Assets)
+                .HasForeignKey(a => a.DepartmentID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AssetRequest>()
+                .HasOne(ar => ar.Department)
+                .WithMany(d => d.AssetRequests)
+                .HasForeignKey(ar => ar.DepartmentID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // ROLE → User
+            // =====================================================
+            modelBuilder.Entity<User>()
+                .HasOne(u => u.Role)
+                .WithMany(r => r.Users)
+                .HasForeignKey(u => u.RoleID)
+                .OnDelete(DeleteBehavior.Restrict);
+            // =====================================================
+            // CATEGORY → Model
+            // =====================================================
+            modelBuilder.Entity<Model>()
+                .HasOne(m => m.Category)
+                .WithMany(c => c.Models)
+                .HasForeignKey(m => m.CategoryID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // MODEL → Asset / AssetRequest
+            // =====================================================
+            modelBuilder.Entity<Asset>()
+                .HasOne(a => a.Model)
+                .WithMany(m => m.Assets)
+                .HasForeignKey(a => a.ModelID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AssetRequest>()
+                .HasOne(ar => ar.Model)
+                .WithMany(m => m.AssetRequests)
+                .HasForeignKey(ar => ar.ModelID)
+                .OnDelete(DeleteBehavior.Restrict);
+            // =====================================================
+            // LOCATION → Asset (CurrentLocation) / AssetRequest
+            // =====================================================
+            modelBuilder.Entity<Asset>()
+                .HasOne(a => a.CurrentLocation)
+                .WithMany(l => l.Assets)
+                .HasForeignKey(a => a.CurrentLocationID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AssetRequest>()
+                .HasOne(ar => ar.RequestedLocation)
+                .WithMany(l => l.AssetRequests)
+                .HasForeignKey(ar => ar.RequestedLocationID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Second link from a request to Location. Location.AssetRequests
+            // already belongs to RequestedLocation above, so this one has no
+            // collection on the Location side -- otherwise EF cannot tell the
+            // two apart.
+            modelBuilder.Entity<AssetRequest>()
+                .HasOne(ar => ar.PickupLocation)
+                .WithMany()
+                .HasForeignKey(ar => ar.PickupLocationID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // ASSET → AssignedUser (User)
+            // =====================================================
+            modelBuilder.Entity<Asset>()
+                .HasOne(a => a.AssignedUser)
+                .WithMany(u => u.AssignedAssets)
+                .HasForeignKey(a => a.AssignedUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // ASSET ↔ DISPOSAL RECORD (one-to-one)
+            // Must be explicit — EF won't infer 1:1 from a nullable
+            // nav alone. UNIQUE(AssetID) in SQL is what makes this 1:1.
+            // =====================================================
+            modelBuilder.Entity<DisposalRecord>()
+     .HasOne(dr => dr.Asset)
+     .WithMany(a => a.DisposalRecords)
+     .HasForeignKey(dr => dr.AssetID)
+     .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<DisposalRecord>()
+                .HasOne(dr => dr.RestoredByUser)
+                .WithMany()
+                .HasForeignKey(dr => dr.RestoredByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<DisposalRecord>()
+                .HasOne(dr => dr.ApprovedByUser)
+                .WithMany(u => u.ApprovedDisposals)
+                .HasForeignKey(dr => dr.ApprovedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // ASSET REQUEST → Asset (nullable) / RequestedByUser / ApprovedByUser
+            // Multiple FKs to User on this entity — must specify each explicitly
+            // =====================================================
+            modelBuilder.Entity<AssetRequest>()
+                .HasOne(ar => ar.Asset)
+                .WithMany(a => a.AssetRequests)
+                .HasForeignKey(ar => ar.AssetID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AssetRequest>()
+                .HasOne(ar => ar.RequestedByUser)
+                .WithMany(u => u.MadeRequests)
+                .HasForeignKey(ar => ar.RequestedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AssetRequest>()
+                .HasOne(ar => ar.ApprovedByUser)
+                .WithMany(u => u.ApprovedRequests)
+                .HasForeignKey(ar => ar.ApprovedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // ASSET REQUEST → Items (the ticket's lines) / Assignments
+            // (the units handed out for it)
+            // =====================================================
+            modelBuilder.Entity<AssetRequestItem>()
+                .HasOne(i => i.Request)
+                .WithMany(r => r.Items)
+                .HasForeignKey(i => i.RequestID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AssetRequestItem>()
+                .HasOne(i => i.Model)
+                .WithMany()
+                .HasForeignKey(i => i.ModelID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // One line per model on a ticket.
+            modelBuilder.Entity<AssetRequestItem>()
+                .HasIndex(i => new { i.RequestID, i.ModelID })
+                .IsUnique();
+
+            modelBuilder.Entity<AssetAssignment>()
+                .HasOne(aa => aa.Request)
+                .WithMany(r => r.Assignments)
+                .HasForeignKey(aa => aa.RequestID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // ASSET ASSIGNMENT → Asset / AssignedToUser / AssignedByUser
+            // Two FKs to User — must specify each explicitly
+            // =====================================================
+            modelBuilder.Entity<AssetAssignment>()
+                .HasOne(aa => aa.Asset)
+                .WithMany(a => a.AssetAssignments)
+                .HasForeignKey(aa => aa.AssetID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AssetAssignment>()
+                .HasOne(aa => aa.AssignedToUser)
+                .WithMany(u => u.ReceivedAssignments)
+                .HasForeignKey(aa => aa.AssignedToUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AssetAssignment>()
+                .HasOne(aa => aa.AssignedByUser)
+                .WithMany(u => u.GivenAssignments)
+                .HasForeignKey(aa => aa.AssignedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // ASSET MOVEMENT → Asset / SourceLocation / DestinationLocation / MovedByUser
+            // Two FKs to Location — must specify each explicitly
+            // =====================================================
+            modelBuilder.Entity<AssetMovement>()
+                .HasOne(am => am.Asset)
+                .WithMany(a => a.AssetMovements)
+                .HasForeignKey(am => am.AssetID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AssetMovement>()
+                .HasOne(am => am.SourceLocation)
+                .WithMany(l => l.OutboundMovements)
+                .HasForeignKey(am => am.SourceLocationID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AssetMovement>()
+                .HasOne(am => am.DestinationLocation)
+                .WithMany(l => l.InboundMovements)
+                .HasForeignKey(am => am.DestinationLocationID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AssetMovement>()
+                .HasOne(am => am.MovedByUser)
+                .WithMany(u => u.ExecutedMovements)
+                .HasForeignKey(am => am.MovedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // AUDIT LOG → User / TargetAsset (nullable)
+            // =====================================================
+            modelBuilder.Entity<AuditLog>()
+                .HasOne(al => al.User)
+                .WithMany(u => u.AuditLogs)
+                .HasForeignKey(al => al.UserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<AuditLog>()
+                .HasOne(al => al.TargetAsset)
+                .WithMany(a => a.AuditLogs)
+                .HasForeignKey(al => al.TargetAssetID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // NOTIFICATION → User
+            // =====================================================
+            modelBuilder.Entity<Notification>()
+                .HasOne(n => n.User)
+                .WithMany() // no ICollection<Notification> nav on User — not needed
+                .HasForeignKey(n => n.UserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // ENUM → STRING CONVERSIONS
+            // Keeps existing VARCHAR columns compatible with C# enums
+            // =====================================================
+            modelBuilder.Entity<Category>()
+                .Property(c => c.Kind)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+
+            // =====================================================
+            // SUPPLIES (Scripts/016). Nothing cascades: a supply with
+            // stock or history cannot be deleted from under them.
+            // =====================================================
+            modelBuilder.Entity<Supply>()
+                .HasOne(s => s.Category)
+                .WithMany()
+                .HasForeignKey(s => s.CategoryID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<SupplyStock>().ToTable("SupplyStock");
+            modelBuilder.Entity<SupplyStock>()
+                .HasOne(s => s.Supply)
+                .WithMany(s => s.Stock)
+                .HasForeignKey(s => s.SupplyID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyStock>()
+                .HasOne(s => s.Location)
+                .WithMany()
+                .HasForeignKey(s => s.LocationID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyStock>()
+                .HasIndex(s => new { s.SupplyID, s.LocationID })
+                .IsUnique();
+            modelBuilder.Entity<SupplyStock>()
+                .HasOne(s => s.Department)
+                .WithMany()
+                .HasForeignKey(s => s.DepartmentID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyTransaction>()
+                .HasOne(t => t.Department)
+                .WithMany()
+                .HasForeignKey(t => t.DepartmentID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<SupplyTransaction>()
+                .HasOne(t => t.Supply)
+                .WithMany(s => s.Transactions)
+                .HasForeignKey(t => t.SupplyID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyTransaction>()
+                .HasOne(t => t.Location)
+                .WithMany()
+                .HasForeignKey(t => t.LocationID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyTransaction>()
+                .HasOne(t => t.PerformedBy)
+                .WithMany()
+                .HasForeignKey(t => t.PerformedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyTransaction>()
+                .Property(t => t.Type)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+
+            // A branch's own low-stock level (Scripts/023)
+            modelBuilder.Entity<SupplyBranchLevel>()
+                .HasOne(l => l.Supply).WithMany(s => s.BranchLevels)
+                .HasForeignKey(l => l.SupplyID).OnDelete(DeleteBehavior.Cascade);
+            modelBuilder.Entity<SupplyBranchLevel>()
+                .HasOne(l => l.Branch).WithMany()
+                .HasForeignKey(l => l.BranchID).OnDelete(DeleteBehavior.Restrict);
+
+            // SUPPLY REQUESTS (Scripts/017)
+            modelBuilder.Entity<SupplyRequest>()
+                .Property(r => r.Status)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+            modelBuilder.Entity<SupplyRequest>()
+                .HasOne(r => r.RequestedBy).WithMany()
+                .HasForeignKey(r => r.RequestedByUserID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyRequest>()
+                .HasOne(r => r.Branch).WithMany()
+                .HasForeignKey(r => r.BranchID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyRequest>()
+                .HasOne(r => r.Department).WithMany()
+                .HasForeignKey(r => r.DepartmentID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyTransaction>()
+                .HasOne(t => t.NewItemRequest).WithMany()
+                .HasForeignKey(t => t.NewItemRequestID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyRequest>()
+                .HasOne(r => r.DecidedBy).WithMany()
+                .HasForeignKey(r => r.DecidedByUserID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyRequest>()
+                .HasOne(r => r.ReleasedBy).WithMany()
+                .HasForeignKey(r => r.ReleasedByUserID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyRequest>()
+                .HasOne(r => r.DeliveredBy).WithMany()
+                .HasForeignKey(r => r.DeliveredByUserID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyRequest>()
+                .HasOne(r => r.PickupLocation).WithMany()
+                .HasForeignKey(r => r.PickupLocationID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyRequest>()
+                .HasOne(r => r.DeliverToLocation).WithMany()
+                .HasForeignKey(r => r.DeliverToLocationID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<SupplyRequestItem>()
+                .HasOne(i => i.Request).WithMany(r => r.Items)
+                .HasForeignKey(i => i.SupplyRequestID).OnDelete(DeleteBehavior.Cascade);
+            modelBuilder.Entity<SupplyRequestItem>()
+                .HasOne(i => i.Supply).WithMany()
+                .HasForeignKey(i => i.SupplyID).OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<Asset>()
+                .Property(a => a.Condition)
+                .HasConversion<string>()
+                .HasMaxLength(30);
+
+            modelBuilder.Entity<Asset>()
+                .Property(a => a.Status)
+                .HasConversion<string>()
+                .HasMaxLength(30);
+
+            modelBuilder.Entity<AssetRequest>()
+                .Property(ar => ar.RequestType)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+
+            modelBuilder.Entity<AssetRequest>()
+                .Property(ar => ar.RequestStatus)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+
+            modelBuilder.Entity<AssetAssignment>()
+                .Property(aa => aa.ConditionOnAssignment)
+                .HasConversion<string>()
+                .HasMaxLength(30);
+
+            modelBuilder.Entity<AssetAssignment>()
+                .Property(aa => aa.ConditionOnReturn)
+                .HasConversion<string>()
+                .HasMaxLength(30);
+
+            modelBuilder.Entity<AssetMovement>()
+                .Property(am => am.ConditionOnTransfer)
+                .HasConversion<string>()
+                .HasMaxLength(30);
+
+            modelBuilder.Entity<NewItemRequest>()
+                .Property(n => n.RequestStatus)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+
+            // Assets or Supplies, and where to bring them (Scripts/019).
+            modelBuilder.Entity<NewItemRequest>()
+                .Property(n => n.ItemKind)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+            modelBuilder.Entity<NewItemRequest>()
+                .HasOne(n => n.DeliverToLocation)
+                .WithMany()
+                .HasForeignKey(n => n.DeliverToLocationID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // A line may point at the model or supply it asks for more of.
+            // Deleting that model or supply clears the link; the line keeps
+            // its typed name.
+            modelBuilder.Entity<NewItemRequestItem>()
+                .HasOne(i => i.Model)
+                .WithMany()
+                .HasForeignKey(i => i.ModelID)
+                .OnDelete(DeleteBehavior.SetNull);
+            modelBuilder.Entity<NewItemRequestItem>()
+                .HasOne(i => i.Supply)
+                .WithMany()
+                .HasForeignKey(i => i.SupplyID)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // Two foreign keys into Users (requester and reviewer) mean EF
+            // would otherwise configure cascading deletes down both, which
+            // SQL Server rejects as multiple cascade paths. Restrict on all
+            // four, matching the NO ACTION the table script declares.
+            modelBuilder.Entity<NewItemRequestStep>()
+                .Property(s => s.Status)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+
+            modelBuilder.Entity<NewItemRequestStep>()
+                .Property(s => s.ActedAt)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+
+            // A ticket's lines go with it.
+            modelBuilder.Entity<NewItemRequestItem>()
+                .HasOne(i => i.Request)
+                .WithMany(n => n.Items)
+                .HasForeignKey(i => i.NewItemRequestID)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<NewItemRequestStep>()
+                .HasOne(s => s.Request)
+                .WithMany(n => n.Steps)
+                .HasForeignKey(s => s.NewItemRequestID)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<NewItemRequestStep>()
+                .HasOne(s => s.ActedByUser)
+                .WithMany()
+                .HasForeignKey(s => s.ActedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<NewItemRequest>()
+                .HasOne(n => n.RequestedByUser)
+                .WithMany()
+                .HasForeignKey(n => n.RequestedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<NewItemRequest>()
+                .HasOne(n => n.ReviewedByUser)
+                .WithMany()
+                .HasForeignKey(n => n.ReviewedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Who confirmed receiving the units (Scripts/024), and the units
+            // bought for a ticket. Restrict: nothing cascades from these.
+            modelBuilder.Entity<NewItemRequest>()
+                .HasOne(n => n.AcknowledgedByUser)
+                .WithMany()
+                .HasForeignKey(n => n.AcknowledgedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<Asset>()
+                .HasOne(a => a.NewItemRequest)
+                .WithMany(n => n.RegisteredAssets)
+                .HasForeignKey(a => a.NewItemRequestID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<Asset>()
+                .HasOne(a => a.RedTaggedByUser)
+                .WithMany()
+                .HasForeignKey(a => a.RedTaggedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Physical counts (Scripts/025).
+            modelBuilder.Entity<AssetCount>()
+                .HasOne(c => c.Location)
+                .WithMany()
+                .HasForeignKey(c => c.LocationID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<AssetCount>()
+                .HasOne(c => c.CountedByUser)
+                .WithMany()
+                .HasForeignKey(c => c.CountedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<AssetCountLine>()
+                .HasOne(l => l.Count)
+                .WithMany(c => c.Lines)
+                .HasForeignKey(l => l.AssetCountID)
+                .OnDelete(DeleteBehavior.Cascade);
+            modelBuilder.Entity<AssetCountLine>()
+                .HasOne(l => l.Asset)
+                .WithMany()
+                .HasForeignKey(l => l.AssetID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<AssetCountLine>()
+                .HasOne(l => l.RecordedLocation)
+                .WithMany()
+                .HasForeignKey(l => l.RecordedLocationID)
+                .OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<AssetCountLine>()
+                .Property(l => l.Result)
+                .HasConversion<string>()
+                .HasMaxLength(20);
+            modelBuilder.Entity<AssetRequest>()
+                .HasOne(ar => ar.AcknowledgedByUser)
+                .WithMany()
+                .HasForeignKey(ar => ar.AcknowledgedByUserID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<NewItemRequest>()
+                .HasOne(n => n.Department)
+                .WithMany()
+                .HasForeignKey(n => n.DepartmentID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            modelBuilder.Entity<NewItemRequest>()
+                .HasOne(n => n.Category)
+                .WithMany()
+                .HasForeignKey(n => n.CategoryID)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Requisitions (Scripts/031): purchase orders and the units
+            // Property picked from stock. Only the order's lines and a
+            // requisition's picks go with their parent; nothing else
+            // cascades (SQL Server refuses two cascade paths).
+            modelBuilder.Entity<AssetRequest>()
+                .HasOne(r => r.Purchase).WithMany()
+                .HasForeignKey(r => r.NewItemRequestID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<PurchaseOrder>()
+                .HasIndex(o => o.PONumber).IsUnique();
+            modelBuilder.Entity<PurchaseOrder>()
+                .HasOne(o => o.Supplier).WithMany(s => s.Orders)
+                .HasForeignKey(o => o.SupplierID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<Supplier>()
+                .HasIndex(s => s.Name).IsUnique();
+            modelBuilder.Entity<PurchaseOrder>()
+                .HasOne(o => o.Request).WithMany(n => n.PurchaseOrders)
+                .HasForeignKey(o => o.NewItemRequestID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<PurchaseOrder>()
+                .HasOne(o => o.CreatedByUser).WithMany()
+                .HasForeignKey(o => o.CreatedByUserID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<PurchaseOrder>()
+                .HasOne(o => o.PrintedByUser).WithMany()
+                .HasForeignKey(o => o.PrintedByUserID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<PurchaseOrder>()
+                .HasOne(o => o.CancelledByUser).WithMany()
+                .HasForeignKey(o => o.CancelledByUserID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<PurchaseOrderAttachment>()
+                .HasOne(a => a.Order).WithMany(o => o.Attachments)
+                .HasForeignKey(a => a.PurchaseOrderID).OnDelete(DeleteBehavior.Cascade);
+            modelBuilder.Entity<PurchaseOrderAttachment>()
+                .HasOne(a => a.UploadedByUser).WithMany()
+                .HasForeignKey(a => a.UploadedByUserID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<Asset>()
+                .HasOne(a => a.NewItemRequestItem).WithMany()
+                .HasForeignKey(a => a.NewItemRequestItemID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<PurchaseOrderLine>()
+                .HasOne(l => l.Order).WithMany(o => o.Lines)
+                .HasForeignKey(l => l.PurchaseOrderID).OnDelete(DeleteBehavior.Cascade);
+            modelBuilder.Entity<PurchaseOrderLine>()
+                .HasOne(l => l.Item).WithMany()
+                .HasForeignKey(l => l.NewItemRequestItemID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<NewItemRequestUnit>()
+                .HasKey(u => new { u.NewItemRequestID, u.AssetID });
+            modelBuilder.Entity<NewItemRequestUnit>()
+                .HasOne(u => u.Request).WithMany(n => n.PickedUnits)
+                .HasForeignKey(u => u.NewItemRequestID).OnDelete(DeleteBehavior.Cascade);
+            modelBuilder.Entity<NewItemRequestUnit>()
+                .HasOne(u => u.Asset).WithMany()
+                .HasForeignKey(u => u.AssetID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<NewItemRequestUnit>()
+                .HasOne(u => u.Item).WithMany()
+                .HasForeignKey(u => u.NewItemRequestItemID).OnDelete(DeleteBehavior.Restrict);
+            modelBuilder.Entity<NewItemRequestUnit>()
+                .HasOne(u => u.PickedByUser).WithMany()
+                .HasForeignKey(u => u.PickedByUserID).OnDelete(DeleteBehavior.Restrict);
+
+            // =====================================================
+            // UNIQUE CONSTRAINTS
+            // =====================================================
+            modelBuilder.Entity<Asset>()
+                .HasIndex(a => a.AssetCode)
+                .IsUnique();
+
+            modelBuilder.Entity<User>()
+                .HasIndex(u => u.Username)
+                .IsUnique();
+
+            modelBuilder.Entity<Category>()
+                .HasIndex(c => c.CategoryName)
+                .IsUnique();
+
+            modelBuilder.Entity<Role>()
+                .HasIndex(r => r.RoleName)
+                .IsUnique();
+
+            // =====================================================
+            // CHECK CONSTRAINTS on AssetRequests. Mirrors Scripts/006
+            // (RequestItems) -- there are no migrations, so that script is
+            // what actually changes the DB.
+            //   Borrow:   no destination.
+            //   Transfer: a destination.
+            //   What is asked for is in AssetRequestItems, not here.
+            // =====================================================
+            modelBuilder.Entity<AssetRequest>()
+                .ToTable(t =>
+                {
+                    t.HasCheckConstraint(
+                        "CK_AssetRequests_TypeFieldRules",
+                        "([RequestType] = 'Borrow' AND [RequestedLocationID] IS NULL) " +
+                        "OR ([RequestType] = 'Transfer' AND [RequestedLocationID] IS NOT NULL)");
+                    t.HasCheckConstraint(
+                        "CK_AssetRequests_DateOrder",
+                        "[NeededFrom] IS NULL OR [ReturnBy] IS NULL OR [ReturnBy] > [NeededFrom]");
+                });
+            // =====================================================
+            // DEFAULT VALUES: the current time, in UTC (see TIMES below)
+            // =====================================================
+            modelBuilder.Entity<AssetAssignment>()
+                .Property(aa => aa.AssignmentDate)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+
+            modelBuilder.Entity<AssetMovement>()
+                .Property(am => am.DateMoved)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+
+            modelBuilder.Entity<DisposalRecord>()
+                .Property(dr => dr.DisposalDate)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+
+            modelBuilder.Entity<AuditLog>()
+                .Property(al => al.LogDateTime)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+
+            modelBuilder.Entity<NewItemRequest>()
+                .Property(n => n.RequestDate)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+
+            modelBuilder.Entity<Notification>()
+                .Property(n => n.CreatedAt)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+
+            modelBuilder.Entity<AssetRequest>()
+                .Property(ar => ar.RequestDate)
+                .HasDefaultValueSql("SYSUTCDATETIME()");
+
+            // =====================================================
+            // TIMES: stored in UTC, used as Philippine time
+            // The database keeps every timestamp in UTC (the industry
+            // standard). The app reads and writes them as Philippine time
+            // (UTC+8): this converter adds 8 hours on the way out and takes
+            // them off on the way in, so the rest of the code, the pages and
+            // the reports all work in Philippine time without converting.
+            // Calendar dates with no time of day are left as they are.
+            // =====================================================
+            var utcToPhilippineTime = new ValueConverter<DateTime, DateTime>(
+                philippineTime => PhilippineTime.ToUtc(philippineTime),
+                utc => PhilippineTime.FromUtc(utc));
+
+            var calendarDates = new HashSet<(Type, string)>
+            {
+                (typeof(Asset), nameof(Asset.AcquisitionDate)),
+                (typeof(NewItemRequest), nameof(NewItemRequest.NeededBy)),
+                (typeof(PurchaseOrder), nameof(PurchaseOrder.OrderDate)),
+            };
+
+            foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+            {
+                foreach (var property in entityType.GetProperties())
+                {
+                    if (property.ClrType != typeof(DateTime) && property.ClrType != typeof(DateTime?))
+                        continue;
+                    if (calendarDates.Contains((entityType.ClrType, property.Name)))
+                        continue;
+                    property.SetValueConverter(utcToPhilippineTime);
+                }
+            }
+        }
+    }
+}

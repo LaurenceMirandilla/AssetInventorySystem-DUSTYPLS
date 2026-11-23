@@ -1,0 +1,554 @@
+﻿@model SchoolInventoryManagement.BLL.DTOs.NewItemRequestResponseDTO
+@using System.Text.RegularExpressions
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@using SchoolInventoryManagement.Web.ViewModels
+@inject SchoolInventoryManagement.Web.Helpers.AuditText AuditText
+@{
+    ViewData["Title"] = $"Requisition #{Model.NewItemRequestID}";
+    // What this page shows, for the live updates (_Layout, site.js).
+    ViewData["LiveScope"] = "newitem:" + Model.NewItemRequestID;
+
+    // Height rules: two fixed cards (summary, step tracker), then lists that
+    // are each capped and paginated -- items 10 a page, history 10 a page;
+    // the steps list holds at most five entries and needs no pager.
+    var currentUserId = int.Parse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)!.Value);
+    var isMine = Model.RequestedByUserID == currentUserId;
+    var isStopped = Model.RequestStatus is NewItemStatus.Rejected or NewItemStatus.Cancelled;
+    // Whoever holds the ticket can reject it at any open stage, with a reason.
+    var canReject = NewItemProgress.Open.Contains(Model.RequestStatus);
+    // The requester can take it back until something is ordered for it.
+    var canCancel = isMine && NewItemProgress.Open.Contains(Model.RequestStatus) && Model.PurchaseOrders.Count == 0;
+    var isSupplies = Model.ItemKind == CategoryKind.Supply;
+    // The Delivery stage: Delivered, or Not delivered with a reason.
+    var delivering = Model.RequestStatus == NewItemStatus.Arrived;
+    var deliveryProblem = NewItemProgress.DeliveryProblem(Model);
+    var isManager = User.IsInRole("Property Officer") || User.IsInRole("Administrator");
+    // Purchase orders are made by the Purchasing Officers only.
+    var isBuyer = User.IsInRole("Purchasing Officer");
+    var seesOrders = isManager || isBuyer || User.IsInRole("Principal");
+    var buying = Model.RequestStatus == NewItemStatus.Procuring;
+    var fromStock = Model.Items.Sum(i => i.FromStock);
+    var toBuy = Model.Items.Sum(i => i.ToBuy);
+    var picked = Model.RegisteredUnits.Count(u => u.FromStock);
+    var registered = Model.RegisteredUnits.Count(u => !u.FromStock);
+    // Where "back" goes: your list, Purchasing, or the queue.
+    var backAction = isMine ? "MyRequests" : "Pending";
+    var backController = !isMine && buying && User.IsInRole("Purchasing Officer") ? "Purchasing" : "NewItemRequests";
+    var backText = isMine ? "Requisitions" : backController == "Purchasing" ? "Purchasing" : "Requisition";
+    if (backController == "Purchasing") { backAction = "Index"; }
+    var units = Model.Items.Sum(i => i.Quantity);
+    // The item lines saved with the ticket are already in the table above
+    // and summed up in "Submitted the request", so they are not listed
+    // again one by one (they stay in the full audit log report).
+    var history = (ViewBag.AuditHistory as List<AuditReportRowDTO>)?
+        .Where(r => r.ActionPerformed != "NewItemRequestItem Created")
+        .ToList();
+
+    // Step tracker: Submitted, then Procurement (when something had to be
+    // bought) -> Property -> Receive (NewItemProgress).
+    var tracker = new List<RequestStep>
+    {
+        new("Submitted", Model.RequestDate.ToString("MMM d"), RequestStepState.Done)
+    };
+    tracker.AddRange(NewItemProgress.Steps(Model, "waiting"));
+
+    // What the dashed "Waiting for ..." entry and its "Next:" hint say.
+    var waitingFor = Model.RequestStatus switch
+    {
+        NewItemStatus.AwaitingDeptHead or NewItemStatus.AwaitingBudget or NewItemStatus.Procuring
+            => ("Waiting for Purchasing", "Next: what is missing is ordered from a supplier"),
+        NewItemStatus.AwaitingArrival => ("Waiting for the supplier", "Next: the Property Department receives it and gets everything ready"),
+        NewItemStatus.Arrived => (deliveryProblem is null ? "Being got ready by the Property Department" : "Waiting to be sent again",
+            "Next: everything is sent" + (Model.DeliverToLocationName is null ? "" : " to " + Model.DeliverToLocationName) + " together"),
+        NewItemStatus.Delivered when Model.AwaitsAcknowledgment
+            => ($"Waiting for {Model.RequestedByUserName} to confirm receiving it", "Next: the requisition is complete"),
+        _ => ((string, string)?)null
+    };
+}
+
+@functions {
+    // A history entry in plain words, from the raw audit row.
+    string Headline(AuditReportRowDTO row) => row.ActionPerformed switch
+    {
+        "NewItemRequest Created" => "Made the requisition",
+        "NewItemRequestItem Created" => ItemLine(row.Description),
+        "NewItemRequest Updated" => StatusLine(row.Description),
+        _ => DisplayText.Humanize(row.ActionPerformed)
+    };
+
+    static string ItemLine(string? raw)
+    {
+        var name = Regex.Match(raw ?? "", @"ItemName: '([^']*)'");
+        var qty = Regex.Match(raw ?? "", @"Quantity: '(\d+)'");
+        return name.Success ? $"Asked for {name.Groups[1].Value}" + (qty.Success ? $" ×{qty.Groups[1].Value}" : "") : "Added an item";
+    }
+
+    static string StatusLine(string? raw)
+    {
+        var s = Regex.Match(raw ?? "", @"RequestStatus: '\w*' -> '(\w+)'");
+        if (!s.Success) return "Updated the requisition";
+        return s.Groups[1].Value switch
+        {
+            "AwaitingBudget" => "Approved for the department",
+            "Procuring" => "Moved it to Purchasing",
+            "AwaitingArrival" => "Marked it ordered",
+            "Arrived" => "Received it from the supplier",
+            "Delivered" => "Sent it out",
+            "Rejected" => "Rejected the requisition",
+            "Cancelled" => "Cancelled the requisition",
+            var other => DisplayText.Humanize(other)
+        };
+    }
+
+    static string Kind(string action)
+    {
+        var last = action.Split(' ').LastOrDefault() ?? action;
+        return last is "Created" or "Updated" or "Deleted" ? last : "Event";
+    }
+}
+
+@if (TempData["ErrorMessage"] != null)
+{
+    <div class="alert alert-danger">@TempData["ErrorMessage"]</div>
+}
+
+@* Purchasing: what is missing, and the purchase order to make. *@
+@if (buying && isBuyer && !isMine)
+{
+    <div class="alert alert-info d-flex align-items-center flex-wrap" style="gap:10px;">
+        <span class="flex-grow-1">
+            <strong>To buy:</strong>
+            @foreach (var i in Model.Items.Where(i => i.ToBuy > 0))
+            {
+                <span class="me-3 d-inline-block">@i.ItemName ×@i.ToBuy@(i.Ordered > 0 ? $" ({i.Ordered} ordered)" : "")</span>
+            }
+            @if (fromStock > 0)
+            {
+                <span class="d-block mt-1 small">The rest (@fromStock) comes from the Property Department's stock.</span>
+            }
+        </span>
+        @if (Model.LeftToOrder > 0)
+        {
+            <a asp-controller="Purchasing" asp-action="CreateOrder" asp-route-requestId="@Model.NewItemRequestID" class="btn btn-sm btn-primary">Make purchase order</a>
+        }
+    </div>
+}
+
+@* Property: receiving it, then getting everything ready to send. *@
+@if (isManager && !isMine && Model.RequestStatus is NewItemStatus.Procuring or NewItemStatus.AwaitingArrival or NewItemStatus.Arrived)
+{
+    var ready = Model.RequestStatus == NewItemStatus.Arrived;
+    <div class="alert alert-info d-flex align-items-center flex-wrap" style="gap:10px;">
+        <span class="flex-grow-1">
+            @if (!ready)
+            {
+                <span class="d-block">@(Model.RequestStatus == NewItemStatus.AwaitingArrival ? "Ordered: receive it from the supplier when it comes, then get everything ready." : "Purchasing is buying what is missing.")
+                    @(!isSupplies && fromStock > 0 ? "You can already pick the units from stock, so they are kept for it." : "")</span>
+            }
+            else
+            {
+                <span class="d-block">Get everything ready, then send it@(Model.DeliverToLocationName is null ? "" : " to " + Model.DeliverToLocationName) in one go:</span>
+            }
+            @if (isSupplies)
+            {
+                foreach (var i in Model.Items)
+                {
+                    <span class="me-3 d-inline-block"><strong>@i.ItemName</strong>:
+                        @(i.FromStock > 0 ? $"{i.FromStock} from stock" : "")@(i.FromStock > 0 && i.ToBuy > 0 ? " · " : "")@(i.ToBuy > 0 ? (i.SupplyID.HasValue ? $"{i.AddedToStock} of {i.ToBuy} bought added to stock" : "bought, new to the school: add it as a supply") : "")</span>
+                }
+            }
+            else
+            {
+                if (fromStock > 0)
+                {
+                    <span class="me-3 d-inline-block"><strong>@picked of @fromStock</strong> picked from stock</span>
+                }
+                if (toBuy > 0)
+                {
+                    <span class="me-3 d-inline-block"><strong>@registered of @toBuy</strong> bought units registered</span>
+                }
+            }
+        </span>
+        @if (!isSupplies && fromStock > 0)
+        {
+            <a asp-action="Pick" asp-route-id="@Model.NewItemRequestID" class="btn btn-sm @(picked < fromStock ? "btn-primary" : "btn-outline-secondary")">Pick from stock</a>
+        }
+        @if (ready && !isSupplies && registered < toBuy)
+        {
+            <a asp-controller="Assets" asp-action="BulkCreate" asp-route-newItemRequestId="@Model.NewItemRequestID" class="btn btn-sm btn-primary">Register the bought units</a>
+        }
+        @if (ready && isSupplies && Model.Items.Any(i => i.ToBuy > 0 && (!i.SupplyID.HasValue || i.AddedToStock < i.ToBuy)))
+        {
+            <a asp-controller="Supplies" asp-action="AddStock" asp-route-newItemRequestId="@Model.NewItemRequestID" class="btn btn-sm btn-primary">Add to supplies stock</a>
+        }
+    </div>
+}
+
+<div class="asset-detail-head">
+    <div>
+        <nav class="asset-crumbs" aria-label="Breadcrumb">
+            @if (isMine)
+            {
+                <a asp-action="MyRequests">Requisitions</a>
+            }
+            else
+            {
+                <a asp-controller="@backController" asp-action="@backAction">@backText</a>
+            }
+            <span aria-hidden="true">&rsaquo;</span>
+            <span>#@Model.NewItemRequestID</span>
+        </nav>
+        <h2 class="asset-detail-title">@Model.ItemName @if (Model.Items.Count == 1 && Model.Quantity > 1) {<span class="text-muted fw-normal">×@Model.Quantity</span>}</h2>
+    </div>
+</div>
+
+@* ---- 1. Summary (fixed height) ---- *@
+<div class="asset-card rq-summary mb-3">
+    <div class="rq-summary-top">
+        <div class="rq-summary-pills">
+            <span class="md-tag is-newitem">Requisition</span>
+            <span class="md-tag">@NewItemProgress.Kind(Model)</span>
+            <span class="asset-pill asset-status md-pill @NewItemProgress.Pill(Model.RequestStatus)">@DisplayText.Stage(Model.RequestStatus)</span>
+            <span class="rq-status-line is-gray">Submitted @Model.RequestDate.ToString("MMM d, yyyy · h:mm tt")</span>
+        </div>
+        <div class="rq-requester">
+            <strong>@Model.RequestedByUserName</strong>
+            <span>· @(Model.RequestedByRoleName ?? "") · @Model.DepartmentName</span>
+        </div>
+    </div>
+    <dl class="rq-grid">
+        <div class="@(Model.NeededBy is not null && Model.NeededBy.Value.Date < PhilippineTime.Today && !isStopped && Model.RequestStatus != NewItemStatus.Delivered ? "is-late" : "")">
+            <dt>Needed by</dt><dd>@DisplayText.Or(Model.NeededBy?.ToString("MMM d, yyyy"), "No date given")</dd>
+        </div>
+        <div><dt>Items</dt><dd>@Model.Items.Count · @units unit@(units == 1 ? "" : "s")</dd></div>
+        <div><dt>Sent to</dt><dd>@DisplayText.Or(Model.DeliverToText, "Not given")</dd></div>
+        <div><dt>Reason</dt><dd class="@(string.IsNullOrWhiteSpace(Model.Reason) ? "is-empty" : "")">@(string.IsNullOrWhiteSpace(Model.Reason) ? "None given" : Model.Reason)</dd></div>
+    </dl>
+    @if (NewItemProgress.PartlySent(Model) is SchoolInventoryManagement.BLL.DTOs.NewItemRequestStepDTO part)
+    {
+        @* The supplier delivered only part (Scripts/037). *@
+        <div class="rq-remarks">
+            <span>Pending · partly sent @part.ActedAt.ToString("MMM d, h:mm tt")</span>
+            @part.Remarks
+        </div>
+    }
+    @if (deliveryProblem is not null)
+    {
+        <div class="rq-remarks is-red">
+            <span>Not sent · @deliveryProblem.ActedAt.ToString("MMM d, h:mm tt")</span>
+            @deliveryProblem.Remarks It will be tried again.
+        </div>
+    }
+    @if (isStopped && !string.IsNullOrWhiteSpace(Model.Remarks))
+    {
+        <div class="rq-remarks is-red">
+            <span>@(Model.RequestStatus == NewItemStatus.Cancelled ? "Reason for cancelling" : "Reason for rejection")</span>
+            @Model.Remarks
+        </div>
+    }
+    @* Receipt: the requester confirms they have the assets, which makes
+       them the department's. *@
+    @if (Model.AcknowledgedAt is not null)
+    {
+        <div class="rq-remarks">
+            <span>Receipt confirmed</span>
+            @Model.RequestedByUserName confirmed receiving the items on @Model.AcknowledgedAt.Value.ToString("MMM d, yyyy · h:mm tt").@(isSupplies ? "" : $" They are the {Model.DepartmentName}'s.")
+        </div>
+    }
+    else if (Model.AwaitsAcknowledgment && isMine)
+    {
+        <form asp-action="Acknowledge" asp-route-id="@Model.NewItemRequestID" method="post" class="sab-callout sab-callout-warn rq-ack"
+              onsubmit="return confirm('Confirm you received every item on this requisition?');">
+            @Html.AntiForgeryToken()
+            @Html.FormTicket()
+            <input type="hidden" name="rowVersionBase64" value="@RowVersionHelper.ToBase64(Model.RowVersion)" />
+            <div>
+                <span class="sab-callout-label">Did you get @(Model.Quantity == 1 ? "it" : "them")?</span>
+                @if (isSupplies)
+                {
+                    <text>Confirm you received everything on this requisition.</text>
+                }
+                else
+                {
+                    <text>Confirm you received the items. They then become the @(Model.DepartmentName)'s, and your department answers for them.</text>
+                }
+            </div>
+            <button type="submit" class="btn btn-primary">Confirm receipt</button>
+        </form>
+    }
+    else if (Model.AwaitsAcknowledgment)
+    {
+        <div class="rq-remarks">
+            <span>Receipt</span>
+            Not confirmed by @Model.RequestedByUserName yet.@(isSupplies ? "" : $" The items become the {Model.DepartmentName}'s once they confirm; until then the Property Department holds them.")
+        </div>
+    }
+</div>
+
+@* ---- 2. Step tracker (fixed height) ---- *@
+<div class="mb-3"><partial name="_RequestSteps" model="tracker" /></div>
+
+@* ---- 3. What's being asked for: 10 items a page; the total is the whole request's ---- *@
+<div class="asset-card mb-3" data-pager data-page-size="10" data-noun="items">
+    <div class="rq-card-head">
+        <h3>What's being asked for</h3>
+        <span>one requisition, sent together</span>
+    </div>
+    <div class="p-3 pb-0">
+        <partial name="_NewItemTicketItems" model="Model" />
+    </div>
+    @if (Model.Items.Count > 10)
+    {
+        <div class="rq-card-foot">
+            <span data-pager-range></span>
+            <div class="d-flex align-items-center flex-wrap" style="gap:8px;">
+                <span class="text-muted">Show</span>
+                <select class="form-select form-select-sm rq-size" data-pager-size aria-label="Items per page">
+                    <option value="10" selected>10</option>
+                    <option value="20">20</option>
+                    <option value="50">50</option>
+                </select>
+                <span class="text-muted">per page</span>
+                <div class="d-flex flex-wrap" style="gap:6px;" data-pager-buttons></div>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="pb-3"></div>
+    }
+</div>
+
+@* ---- Units registered for this request (assets) ---- *@
+@if (Model.RegisteredUnits.Any())
+{
+    <div class="asset-card mb-3">
+        <div class="rq-card-head">
+            <h3>Units for this requisition</h3>
+            <span>@Model.RegisteredUnits.Count of @Model.OrderedUnits · each with its control number</span>
+        </div>
+        <div class="rq-units">
+            @foreach (var unit in Model.RegisteredUnits)
+            {
+                <div class="rq-unit">
+                    <a asp-controller="Assets" asp-action="Details" asp-route-id="@unit.AssetID" class="asset-code-chip">@unit.AssetCode</a>
+                    <span class="rq-unit-name">@unit.AssetName <small class="text-muted">· @(unit.FromStock ? "from stock" : "bought")</small></span>
+                    <span class="asset-pill asset-status md-pill st-@unit.Status.ToString().ToLowerInvariant()">@(unit.Status == AssetStatus.InTransit ? "Kept for this requisition" : unit.Status == AssetStatus.Assigned ? Model.DepartmentName : DisplayText.Humanize(unit.Status.ToString()))</span>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ---- Purchase orders (Purchasing, Property, Principal, Administrators) ---- *@
+@if (seesOrders && Model.PurchaseOrders.Any())
+{
+    <div class="asset-card mb-3">
+        <div class="rq-card-head">
+            <h3>Purchase orders</h3>
+            <span>@Model.PurchaseOrders.Count · what was bought for it</span>
+        </div>
+        <div class="rq-units">
+            @foreach (var po in Model.PurchaseOrders)
+            {
+                <div class="rq-unit">
+                    <a asp-controller="Purchasing" asp-action="Order" asp-route-id="@po.PurchaseOrderID" class="asset-code-chip">@po.PONumber</a>
+                    <span class="rq-unit-name">@po.SupplierName <small class="text-muted">· @po.OrderDate.ToString("MMM d, yyyy")</small></span>
+                    <span class="fw-semibold">₱@po.Total.ToString("N2")</span>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@* ---- 4. Steps and History: side by side on wide screens, stacked on narrow ---- *@
+<div class="row g-3 mb-3">
+    <div class="@(history != null ? "col-lg-5" : "col-12")">
+        <div class="asset-card h-100">
+            <div class="rq-card-head">
+                <h3>Steps</h3>
+                <span>who moved it, oldest first</span>
+            </div>
+            <ol class="ni-timeline">
+                @foreach (var s in Model.Steps)
+                {
+                    var bad = s.Status is NewItemStatus.Rejected or NewItemStatus.Cancelled or NewItemStatus.DeliveryFailed;
+                    <li class="@(bad ? "is-stopped" : "is-done")">
+                        <span class="ni-timeline-dot" aria-hidden="true">@(bad ? "!" : "✓")</span>
+                        <div class="min-w-0">
+                            <div class="ni-timeline-title">@DisplayText.StepAction(s.Status)</div>
+                            <div class="ni-timeline-meta">@s.ActedByName · @s.ActedByRole · @s.ActedAt.ToString("MMM d, yyyy · h:mm tt")</div>
+                            @if (!string.IsNullOrWhiteSpace(s.Remarks))
+                            {
+                                <div class="ni-timeline-remarks">“@s.Remarks”</div>
+                            }
+                        </div>
+                    </li>
+                }
+                @if (waitingFor is { } w)
+                {
+                    <li class="is-waiting">
+                        <span class="ni-timeline-dot" aria-hidden="true">@(tracker.FindIndex(t => t.State == RequestStepState.Current) + 1)</span>
+                        <div class="min-w-0">
+                            <div class="ni-timeline-title">@w.Item1</div>
+                            <div class="ni-timeline-meta">@w.Item2</div>
+                        </div>
+                    </li>
+                }
+            </ol>
+        </div>
+    </div>
+
+    @* The audit trail in plain words, for the roles that read it
+       (BaseController.LoadAuditHistoryAsync); 10 entries a page. *@
+    @if (history != null)
+    {
+        <div class="col-lg-7">
+            <div class="asset-card h-100" data-pager data-page-size="10" data-noun="entries">
+                <div class="rq-card-head">
+                    <h3>History</h3>
+                    <span>@history.Count entr@(history.Count == 1 ? "y" : "ies") · newest first</span>
+                </div>
+                @if (history.Any())
+                {
+                    <div class="rq-history">
+                        <div class="rq-history-row rq-history-head" aria-hidden="true">
+                            <span>When</span><span>By</span><span>What happened</span>
+                        </div>
+                        @foreach (var row in history)
+                        {
+                            var kind = Kind(row.ActionPerformed);
+                            var created = row.ActionPerformed == "NewItemRequest Created";
+                            <div class="rq-history-row" data-pager-item>
+                                <span class="rq-when">@row.LogDateTime.ToString("MMM d · h:mm tt")</span>
+                                <span class="rq-by">@row.UserName<small>@row.UserRole</small></span>
+                                <span class="rq-what">
+                                    <span class="rq-what-title"><span class="rq-kind is-@kind.ToLowerInvariant()">@kind</span> @Headline(row)</span>
+                                    @if (created)
+                                    {
+                                        <small>@Model.Items.Count item@(Model.Items.Count == 1 ? "" : "s") · @units unit@(units == 1 ? "" : "s")@(Model.NeededBy is null ? "" : " · needed " + Model.NeededBy.Value.ToString("MMM d")) · @Model.DepartmentName</small>
+                                    }
+                                    else if (!string.IsNullOrWhiteSpace(row.Description) && row.ActionPerformed != "NewItemRequestItem Created")
+                                    {
+                                        <small>@(await AuditText.FormatAsync(row.Description))</small>
+                                    }
+                                </span>
+                            </div>
+                        }
+                    </div>
+                    <div class="rq-card-foot">
+                        <span data-pager-range></span>
+                        <div class="d-flex align-items-center flex-wrap" style="gap:8px;">
+                            <span class="text-muted">Show</span>
+                            <select class="form-select form-select-sm rq-size" data-pager-size aria-label="Entries per page">
+                                <option value="10" selected>10</option>
+                                <option value="20">20</option>
+                                <option value="50">50</option>
+                            </select>
+                            <span class="text-muted">per page</span>
+                            <div class="d-flex flex-wrap" style="gap:6px;" data-pager-buttons></div>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="sab-empty"><p class="mb-0">No recorded changes yet.</p></div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@* ---- 5. Bottom bar (sticks to the bottom of the screen) ---- *@
+@if (Model.CanAct)
+{
+    @* One form: the main button moves it on; Reject, Not sent and Short in
+       stock swap the action with formaction, so they share the remarks.
+       Buying is done by making purchase orders, not with a button here. *@
+    <form asp-action="Advance" asp-route-id="@Model.NewItemRequestID" asp-route-returnTo="details" method="post" class="register-footer ni-footer">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="rowVersionBase64" value="@RowVersionHelper.ToBase64(Model.RowVersion)" />
+        <a asp-controller="@backController" asp-action="@backAction" class="btn btn-outline-secondary ni-footer-back" aria-label="Back to @backText">&larr;<span class="d-none d-sm-inline"> @backText</span></a>
+        <input type="text" name="remarks" maxlength="500" class="form-control ni-footer-remarks"
+               placeholder="@(delivering ? "Remarks. Required if it could not be sent or you reject." : "Remarks. Required if you reject.")" aria-label="Remarks" />
+        <div class="d-flex flex-wrap" style="gap:8px;">
+            @if (canReject)
+            {
+                <button type="submit" class="btn btn-outline-danger"
+                        formaction="@Url.Action("Reject", new { id = Model.NewItemRequestID, returnTo = "details" })"
+                        onclick="var r=this.form.querySelector('[name=remarks]'); if(!r.value.trim()){ r.classList.add('is-invalid'); r.focus(); alert('Give a reason for rejecting, so the requester knows why.'); return false; } return confirm('Reject this requisition and every item on it?');">Reject</button>
+            }
+            @if (delivering)
+            {
+                <button type="submit" class="btn btn-outline-secondary"
+                        formaction="@Url.Action("ShortInStock", new { id = Model.NewItemRequestID, returnTo = "details" })"
+                        onclick="return confirm('Send what is no longer in stock back to Purchasing to buy? Everything is sent together once it arrives.');">Short in stock: buy the rest</button>
+                <button type="submit" class="btn btn-outline-danger"
+                        formaction="@Url.Action("NotDelivered", new { id = Model.NewItemRequestID, returnTo = "details" })"
+                        onclick="var r=this.form.querySelector('[name=remarks]'); if(!r.value.trim()){ r.classList.add('is-invalid'); r.focus(); alert('Say why it could not be sent, so the requester knows.'); return false; } return true;">Not sent</button>
+            }
+            @if (buying && isBuyer && Model.LeftToOrder > 0)
+            {
+                <a asp-controller="Purchasing" asp-action="CreateOrder" asp-route-requestId="@Model.NewItemRequestID" class="btn btn-primary">Make purchase order</a>
+            }
+            else if (delivering && NewItemProgress.StillToDo(Model) is var todo && (todo.Register > 0 || todo.Pick > 0 || todo.AddToStock > 0))
+            {
+                @* Not ready to send: what is still to do is the main button. *@
+                @if (todo.Register > 0)
+                {
+                    <a asp-controller="Assets" asp-action="BulkCreate" asp-route-newItemRequestId="@Model.NewItemRequestID" asp-route-returnTo="details" class="btn btn-primary">@NewItemProgress.RegisterLabel(Model) &rarr;</a>
+                }
+                @if (NewItemProgress.CanSendPartial(Model))
+                {
+                    @* The supplier brought only part: send it, wait for the rest (Scripts/037). *@
+                    <button type="submit" class="btn btn-outline-primary"
+                            formaction="@Url.Action("SendPartial", new { id = Model.NewItemRequestID, returnTo = "details" })"
+                            onclick="return confirm('Send what has arrived now, and keep waiting for the rest from the supplier?');">Pending: send what arrived</button>
+                }
+                @if (todo.Pick > 0)
+                {
+                    <a asp-action="Pick" asp-route-id="@Model.NewItemRequestID" asp-route-returnTo="details" class="btn @(todo.Register > 0 ? "btn-outline-secondary" : "btn-primary")">Pick @todo.Pick from stock &rarr;</a>
+                }
+                @if (todo.AddToStock > 0)
+                {
+                    <a asp-controller="Supplies" asp-action="AddStock" asp-route-newItemRequestId="@Model.NewItemRequestID" asp-route-returnTo="details" class="btn btn-primary">Add @todo.AddToStock bought to stock &rarr;</a>
+                    <button type="submit" class="btn btn-outline-secondary" onclick="return confirm('What was bought is not in stock yet. Send it out of the stock already there?');">Send out anyway</button>
+                }
+                else
+                {
+                    <button type="button" class="btn btn-outline-secondary" disabled title="Register and pick everything first">&#10003; @(Model.ForStock ? "Put in stock" : "Send out")</button>
+                }
+            }
+            else
+            {
+                <button type="submit" class="btn btn-primary">&#10003; @(Model.ForStock && delivering ? "Put in stock" : DisplayText.AdvanceButton(Model.RequestStatus))</button>
+            }
+        </div>
+    </form>
+}
+else
+{
+    <div class="register-footer ni-footer">
+        <a asp-controller="@backController" asp-action="@backAction" class="btn btn-outline-secondary">&larr; @backText</a>
+        @if (canCancel)
+        {
+            <form asp-action="Cancel" asp-route-id="@Model.NewItemRequestID" method="post" class="d-flex flex-wrap ms-auto align-items-center" style="gap:8px;"
+                  onsubmit="return confirm('Cancel requisition #@Model.NewItemRequestID? Nothing on it will be bought or sent.');">
+                @Html.AntiForgeryToken()
+                @Html.FormTicket()
+                <input type="hidden" name="rowVersionBase64" value="@RowVersionHelper.ToBase64(Model.RowVersion)" />
+                <input type="text" name="reason" maxlength="500" class="form-control ni-footer-remarks" placeholder="Reason (optional)" aria-label="Reason for cancelling" />
+                <button type="submit" class="btn btn-outline-danger">Cancel requisition</button>
+            </form>
+        }
+        else if (isMine && NewItemProgress.Open.Contains(Model.RequestStatus))
+        {
+            <span class="ms-auto text-muted small">Already ordered from the supplier: to stop it, ask the Property Department or Purchasing.</span>
+        }
+        @if (!isMine && NewItemProgress.IsActive(Model))
+        {
+            <span class="ms-auto">Waiting on @NewItemProgress.WaitingOn(Model).</span>
+        }
+    </div>
+}

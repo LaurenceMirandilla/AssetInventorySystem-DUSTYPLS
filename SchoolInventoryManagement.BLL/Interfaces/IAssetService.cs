@@ -1,0 +1,55 @@
+﻿using System.Collections.Generic;
+using System.Threading.Tasks;
+using SchoolInventoryManagement.BLL.DTOs;
+using SchoolInventoryManagement.DAL.Entities.Enums;
+
+namespace SchoolInventoryManagement.BLL.Interfaces
+{
+    public interface IAssetService
+    {
+        // The asset code is generated from the model's category prefix:
+        // CHAIR-0001, CHAIR-0002, ... up to CHAIR-10000.
+        Task<AssetResponseDTO> CreateAssetAsync(CreateAssetDTO dto, int actingUserId);
+
+        // Registers dto.Quantity units of one model in a single save and
+        // returns their generated codes in order. All or nothing.
+        Task<List<string>> BulkCreateAssetsAsync(BulkCreateAssetsDTO dto, int actingUserId);
+
+        // Several batches (models) at once (Scripts/037): all of them are
+        // registered, or none are. Returns each batch's codes.
+        Task<List<List<string>>> BulkCreateManyAsync(List<BulkCreateAssetsDTO> batches, int actingUserId);
+
+        // Next free code number for every category prefix, for showing the
+        // code a new asset will get before it is saved.
+        Task<Dictionary<string, int>> GetNextCodeNumbersAsync();
+
+        // Next "Unit N" for every model that has units (UnitNumbers): a
+        // model with none starts at 1.
+        Task<Dictionary<int, int>> GetNextUnitNumbersAsync();
+
+        Task<AssetResponseDTO?> GetAssetByIdAsync(int assetId);
+        Task<List<AssetResponseDTO>> GetAllAssetsAsync();
+
+        // locationId is last and optional so the existing callers (request
+        // approval screens, barcode scan) compile unchanged.
+        Task<List<AssetResponseDTO>> SearchAssetsAsync(
+            string? keyword, int? categoryId, int? modelId, int? branchId,
+            int? departmentId, AssetStatus? status, ConditionStatus? condition,
+            int? locationId = null, int? assignedUserId = null);
+
+        Task UpdateAssetAsync(int assetId, UpdateAssetDTO dto, int actingUserId);
+        Task ChangeConditionAsync(int assetId, ConditionStatus newCondition, byte[] rowVersion, int actingUserId);
+        Task ChangeStatusAsync(int assetId, AssetStatus newStatus, byte[] rowVersion, int actingUserId);
+
+        // Under Maintenance -> Available, with the condition set to Repaired.
+        Task ReturnFromMaintenanceAsync(int assetId, byte[] rowVersion, int actingUserId);
+
+        // Makes the barcode for an asset registered without one. Does
+        // nothing if it already has one.
+        Task CreateBarcodeAsync(int assetId, int actingUserId);
+
+        // Removes the asset's barcode (the asset and its code stay). Does
+        // nothing if it has none.
+        Task DeleteBarcodeAsync(int assetId, int actingUserId);
+    }
+}

@@ -1,0 +1,374 @@
+﻿@model SchoolInventoryManagement.Web.ViewModels.RequestHistoryViewModel
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@{
+    var mine = ViewBag.OwnOnly is true;
+    ViewData["Title"] = mine ? "My borrowing history" : "Borrowing history";
+    // Everyone's history belongs to Approvals (sidebar).
+    if (!mine) { ViewData["NavSection"] = "approvals"; }
+    // What this page shows, for the live updates (_Layout, site.js).
+    ViewData["LiveScope"] = "history";
+
+    // Filtering and paging stay on the server (the history can be long);
+    // the list shows one page, grouped by the day of the decision, and the
+    // picked row's details beside it.
+    var route = Model.FilterRoute();
+    var decision = Model.Decision ?? "";
+
+    Dictionary<string, string> WithDecision(string? d)
+    {
+        var r = new Dictionary<string, string>(route);
+        if (d != null) r["decision"] = d;
+        return r;
+    }
+
+    Dictionary<string, string> OnPage(int page)
+    {
+        var r = WithDecision(string.IsNullOrEmpty(Model.Decision) ? null : Model.Decision);
+        r["page"] = page.ToString();
+        return r;
+    }
+
+    var today = PhilippineTime.Today;
+    string DayLabel(DateTime? d) =>
+        d is null ? "Undated"
+        : d.Value.Date == today ? "Today"
+        : d.Value.Date == today.AddDays(-1) ? "Yesterday"
+        : d.Value.ToString("MMM d, yyyy");
+    var days = Model.Rows.GroupBy(r => DayLabel(r.ApprovalDate)).ToList();
+
+    // Filters behind the Filters button (search and decision have their own
+    // places), for its count badge.
+    var filterCount = (Model.Type.HasValue ? 1 : 0) + (Model.DecidedBy.HasValue ? 1 : 0) + (Model.RequestedBy.HasValue ? 1 : 0) + (Model.DepartmentId.HasValue ? 1 : 0) + (Model.BranchId.HasValue ? 1 : 0)
+        + (Model.FromDate.HasValue ? 1 : 0) + (Model.ToDate.HasValue ? 1 : 0);
+    var first = (Model.Page - 1) * SchoolInventoryManagement.Web.ViewModels.RequestHistoryViewModel.PageSize + 1;
+    var last = Math.Min(Model.Page * SchoolInventoryManagement.Web.ViewModels.RequestHistoryViewModel.PageSize, Model.TotalCount);
+    var windowStart = Math.Max(1, Model.Page - 2);
+    var windowEnd = Math.Min(Model.TotalPages, windowStart + 4);
+    windowStart = Math.Max(1, windowEnd - 4);
+}
+
+@functions {
+    static string Initials(string name)
+    {
+        var initials = string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(p => p[0])).ToUpperInvariant();
+        return initials.Length > 2 ? initials[..2] : initials;
+    }
+
+    // How the request ended, for the pill on each row and panel.
+    static (string Label, string Css) Outcome(AssetRequestResponseDTO r) => r.RequestStatus switch
+    {
+        RequestStatus.Rejected => ("Rejected", "st-overdue"),
+        RequestStatus.Cancelled => ("Cancelled", "st-disposed"),
+        // A permanent Transfer: delivered for good, nothing to come back.
+        RequestStatus.Fulfilled => ("Delivered", "st-available"),
+        _ => ("Returned", "st-available")
+    };
+
+    static string Title(AssetRequestResponseDTO r) =>
+        r.ItemsSummary + (r.RequestType == RequestType.Transfer && r.RequestedLocationName != null ? " → " + r.RequestedLocationName : "");
+}
+
+<div class="asset-detail-head mb-3 pb-0 border-0">
+    <div>
+        <h2 class="asset-detail-title">@(mine ? "My borrowing history" : "Borrowing history")</h2>
+        <div class="asset-detail-sub">@(ViewBag.OwnOnly is true
+            ? "Your own Borrow requests that are finished: returned (or delivered for good), rejected or cancelled. Newest first."
+            : "Every Borrow request that is completely finished: returned (or delivered for good), rejected, or cancelled after approval. Newest decision first.")</div>
+    </div>
+    <div class="asset-detail-actions">
+        @if (mine)
+        {
+            <a asp-action="MyRequests" class="btn btn-outline-secondary">&larr; My Borrows</a>
+            <a asp-action="Create" class="btn btn-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                New Borrow
+            </a>
+        }
+        else
+        {
+            <a asp-action="Pending" class="btn btn-outline-secondary">&larr; Borrowed</a>
+        }
+    </div>
+</div>
+
+<nav class="page-tabs" aria-label="Outcome">
+    <a asp-action="History" asp-all-route-data="@WithDecision(null)" class="page-tab @(decision == "" ? "active" : "")">
+        All finished <span class="history-tab-count">@(Model.ReturnedCount + Model.CancelledCount + Model.RejectedCount)</span>
+    </a>
+    <a asp-action="History" asp-all-route-data="@WithDecision("Returned")" class="page-tab @(decision == "Returned" ? "active" : "")">
+        Completed <span class="history-tab-count">@Model.ReturnedCount</span>
+    </a>
+    <a asp-action="History" asp-all-route-data="@WithDecision("Cancelled")" class="page-tab @(decision == "Cancelled" ? "active" : "")">
+        Cancelled <span class="history-tab-count">@Model.CancelledCount</span>
+    </a>
+    <a asp-action="History" asp-all-route-data="@WithDecision("Rejected")" class="page-tab @(decision == "Rejected" ? "active" : "")">
+        Rejected <span class="history-tab-count">@Model.RejectedCount</span>
+    </a>
+</nav>
+
+<div class="sab-table-card myassets" data-md data-page-size="1000">
+    <aside class="myassets-list" aria-label="Decided requests">
+        <form asp-action="History" method="get" class="md-toolbar">
+            @if (!string.IsNullOrEmpty(Model.Decision))
+            {
+                <input type="hidden" name="decision" value="@Model.Decision" />
+            }
+            @if (Model.Mine)
+            {
+                <input type="hidden" name="mine" value="true" />
+            }
+            <label class="asset-search">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                <input type="text" name="keyword" value="@Model.Keyword" autocomplete="off" placeholder="Request #, requester or item..." aria-label="Search by request number, requester or item" />
+            </label>
+            <div class="dropdown">
+                <button type="button" class="asset-tool-btn @(filterCount > 0 ? "active" : "")" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z" /></svg>
+                    Filters
+                    @if (filterCount > 0)
+                    {
+                        <span class="asset-filter-count">@filterCount</span>
+                    }
+                </button>
+                <div class="dropdown-menu dropdown-menu-end md-filter-menu">
+                    <label class="form-label" hidden="@(ViewBag.OwnOnly is true)">Requested by</label>
+                    <div class="mb-2" hidden="@(ViewBag.OwnOnly is true)">
+                    <select name="requestedBy" class="form-select form-select-sm" data-combobox>
+                        <option value="">Anyone</option>
+                        @foreach (var u in Model.Requesters)
+                        {
+                            <option value="@u.UserID" data-sub="@u.RoleName" selected="@(Model.RequestedBy == u.UserID)">@u.FullName</option>
+                        }
+                    </select>
+                    </div>
+                    <label class="form-label">Decided by</label>
+                    <select name="decidedBy" class="form-select form-select-sm mb-2">
+                        <option value="">Anyone</option>
+                        @foreach (var u in Model.Deciders)
+                        {
+                            <option value="@u.UserID" selected="@(Model.DecidedBy == u.UserID)">@u.FullName</option>
+                        }
+                    </select>
+                    <label class="form-label">Branch</label>
+                    <div class="mb-2">
+                    <select name="branchId" id="historyBranch" class="form-select form-select-sm" data-combobox>
+                        <option value="">All branches</option>
+                        @foreach (var b in Model.Departments.GroupBy(d => d.BranchID).Select(g => g.First()).OrderBy(d => d.BranchName))
+                        {
+                            <option value="@b.BranchID" selected="@(Model.BranchId == b.BranchID)">@b.BranchName</option>
+                        }
+                    </select>
+                    </div>
+                    <label class="form-label">Department</label>
+                    <div class="mb-2">
+                    <select name="departmentId" id="historyDept" class="form-select form-select-sm" data-combobox>
+                        <option value="">All departments</option>
+                        @foreach (var d in Model.Departments.OrderBy(d => d.BranchName).ThenBy(d => d.DepartmentName))
+                        {
+                            <option value="@d.DepartmentID" data-branch="@d.BranchID" selected="@(Model.DepartmentId == d.DepartmentID)">@d.BranchName — @d.DepartmentName</option>
+                        }
+                    </select>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-6">
+                            <label class="form-label">Decided from</label>
+                            <input type="date" name="fromDate" class="form-control form-control-sm" value="@(Model.FromDate?.ToString("yyyy-MM-dd"))" />
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label">to</label>
+                            <input type="date" name="toDate" class="form-control form-control-sm" value="@(Model.ToDate?.ToString("yyyy-MM-dd"))" />
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <a asp-action="History" class="btn btn-link btn-sm px-0">Reset</a>
+                        <button type="submit" class="btn btn-primary btn-sm">Apply</button>
+                    </div>
+                </div>
+            </div>
+        </form>
+
+        @if (!Model.Rows.Any())
+        {
+            <div class="myassets-nomatch">@(Model.HasFilters ? "No finished requests match these filters." : "No requests have finished yet.")</div>
+        }
+
+        @foreach (var day in days)
+        {
+            <div class="myassets-group" data-md-group>
+                <div class="myassets-group-label group-use">@day.Key · <span data-md-count>@day.Count()</span></div>
+                @foreach (var r in day)
+                {
+                    var rejected = r.RequestStatus == RequestStatus.Rejected;
+                    <button type="button" class="myassets-item" data-entry="h-@r.RequestID">
+                        <span class="md-avatar">@Initials(r.RequestedByUser.FullName)</span>
+                        <span class="myassets-item-main">
+                            <span class="myassets-item-title">@r.RequestedByUser.FullName</span>
+                            <span class="myassets-item-sub">@Title(r)</span>
+                            <span class="md-tags">
+                                <span class="md-tag @(r.RequestType == RequestType.Transfer ? "is-transfer" : "")">@r.RequestType</span>
+                                by @DisplayText.Or(r.ApprovedByUser?.FullName, "nobody recorded")@(r.ApprovalDate is not null ? " · " + r.ApprovalDate.Value.ToString("h:mm tt") : "")
+                            </span>
+                        </span>
+                        <span class="asset-pill asset-status md-pill @Outcome(r).Css">@Outcome(r).Label</span>
+                    </button>
+                }
+            </div>
+        }
+
+        @if (Model.TotalCount > 0)
+        {
+            <div class="md-foot">
+                <span>@first–@last of @Model.TotalCount request@(Model.TotalCount == 1 ? "" : "s")</span>
+                @if (Model.TotalPages > 1)
+                {
+                    <nav class="d-flex" style="gap:6px;" aria-label="History pages">
+                        @if (Model.Page > 1)
+                        {
+                            <a class="asset-page" asp-action="History" asp-all-route-data="@OnPage(Model.Page - 1)" aria-label="Previous page">&lsaquo;</a>
+                        }
+                        else
+                        {
+                            <span class="asset-page disabled">&lsaquo;</span>
+                        }
+                        @for (var n = windowStart; n <= windowEnd; n++)
+                        {
+                            if (n == Model.Page)
+                            {
+                                <span class="asset-page current" aria-current="page">@n</span>
+                            }
+                            else
+                            {
+                                <a class="asset-page" asp-action="History" asp-all-route-data="@OnPage(n)">@n</a>
+                            }
+                        }
+                        @if (Model.Page < Model.TotalPages)
+                        {
+                            <a class="asset-page" asp-action="History" asp-all-route-data="@OnPage(Model.Page + 1)" aria-label="Next page">&rsaquo;</a>
+                        }
+                        else
+                        {
+                            <span class="asset-page disabled">&rsaquo;</span>
+                        }
+                    </nav>
+                }
+            </div>
+        }
+    </aside>
+
+    <section class="myassets-detail">
+        @if (!Model.Rows.Any())
+        {
+            <div class="sab-empty">
+                <div class="sab-empty-title">Nothing to show</div>
+                <p>Decided requests appear here.</p>
+            </div>
+        }
+        @foreach (var r in Model.Rows)
+        {
+            var rejected = r.RequestStatus == RequestStatus.Rejected;
+            var isBorrow = r.RequestType == RequestType.Borrow;
+            <article class="myassets-panel" data-panel="h-@r.RequestID" hidden>
+                <button type="button" class="myassets-back" data-back>&larr; All finished</button>
+
+                <div class="myassets-panel-head">
+                    <div class="md-person">
+                        <span class="md-avatar md-avatar-lg">@Initials(r.RequestedByUser.FullName)</span>
+                        <div class="min-w-0">
+                            <div class="myassets-panel-meta">
+                                <span class="md-tag @(isBorrow ? "" : "is-transfer")">@r.RequestType</span>
+                                <span>Request #@r.RequestID · submitted @r.RequestDate.ToString("MMM d, h:mm tt")</span>
+                            </div>
+                            <h3 class="md-person-name">@r.RequestedByUser.FullName <small>· @r.RequestedByUser.RoleName · @r.DepartmentName</small></h3>
+                        </div>
+                    </div>
+                    <div class="myassets-panel-actions">
+                        <span class="asset-pill asset-status @Outcome(r).Css">@Outcome(r).Label</span>
+                        <a asp-action="Details" asp-route-id="@r.RequestID" asp-route-from="history" class="btn btn-outline-secondary">View &rarr;</a>
+                    </div>
+                </div>
+
+                <div class="decision-card @(rejected ? "is-rejected" : "")">
+                    <div class="min-w-0">
+                        <div class="decision-title">@(rejected ? "Rejected" : "Approved") by @DisplayText.Or(r.ApprovedByUser?.FullName, "nobody recorded")</div>
+                        <div class="decision-meta">
+                            @(r.ApprovalDate?.ToString("MMM d, yyyy · h:mm tt") ?? "")@(r.ApprovedByUser != null ? " · " + r.ApprovedByUser.RoleName : "")
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(r.Remarks))
+                        {
+                            <div class="decision-remarks">“@r.Remarks”</div>
+                        }
+                    </div>
+                </div>
+
+                <div class="myassets-stats">
+                    <div>
+                        <span>Now</span>
+                        <strong class="@(rejected ? "" : "text-success")">@DisplayText.Or(rejected ? null : DisplayText.RequestStatusLabel(r.RequestStatus, r.RequestType), "Never went out")</strong>
+                    </div>
+                    <div><span>@(isBorrow ? "Pickup at" : "Move to")</span><strong>@DisplayText.Or(isBorrow ? r.PickupLocationName ?? r.RequestedLocationName : r.RequestedLocationName, "Not chosen")</strong></div>
+                    <div><span>Needed</span><strong>@DisplayText.Or(r.NeededFrom?.ToString("MMM d"), "Not given")@(r.ReturnBy is not null ? " → " + r.ReturnBy.Value.ToString("MMM d") : "")</strong></div>
+                    <div><span>Department</span><strong>@r.DepartmentName</strong></div>
+                </div>
+
+                @if (r.Units.Any())
+                {
+                    <h4 class="md-section-title">Units @(r.RequestStatus == RequestStatus.InTransit ? "set aside" : "handed out")</h4>
+                    <div class="myassets-units">
+                        <table class="table myassets-table">
+                            <thead><tr><th>Code</th><th>Asset</th><th>Status</th></tr></thead>
+                            <tbody>
+                                @for (var i = 0; i < r.Units.Count; i++)
+                                {
+                                    var u = r.Units[i];
+                                    <tr hidden="@(i >= 4)" data-extra="@(i >= 4 ? "true" : null)">
+                                        <td data-label="Code"><a asp-controller="Assets" asp-action="Details" asp-route-id="@u.AssetID" class="asset-code-chip">@u.AssetCode</a></td>
+                                        <td data-label="Asset">@u.AssetName</td>
+                                        <td data-label="Status">
+                                            @if (u.ReturnDate is not null)
+                                            {
+                                                <span class="asset-pill asset-status st-available">Returned @u.ReturnDate.Value.ToString("MMM d")</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="asset-pill asset-status st-@u.AssetStatus.ToString().ToLowerInvariant()">@DisplayText.AssetStatusLabel(u.AssetStatus, r.RequestType)</span>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                        @if (r.Units.Count > 4)
+                        {
+                            <button type="button" class="myassets-more" data-more>Show @(r.Units.Count - 4) more unit@(r.Units.Count - 4 == 1 ? "" : "s") &#9662;</button>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <h4 class="md-section-title">What was asked for</h4>
+                    <div class="myassets-chips mt-0">
+                        @foreach (var item in r.Items)
+                        {
+                            <span class="myassets-chip">@item.ModelName <strong>×@item.Quantity</strong></span>
+                        }
+                    </div>
+                }
+            </article>
+        }
+    </section>
+</div>
+
+@section Scripts {
+    <script>
+        // Filters: picking a branch leaves only its departments in the
+        // Department list (rebuilt, not hidden -- some browsers ignore
+        // "hidden" on <option>). A department from another branch is cleared.
+        (function () {
+            var branch = document.getElementById('historyBranch');
+            var dept = document.getElementById('historyDept');
+            if (!branch || !dept) return;
+            sabFilterByBranch(dept, branch, { showAllWhenEmpty: true, strip: true });
+        })();
+    </script>
+}

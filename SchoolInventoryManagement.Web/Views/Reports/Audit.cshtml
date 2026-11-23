@@ -1,0 +1,168 @@
+﻿@model List<SchoolInventoryManagement.BLL.DTOs.AuditReportRowDTO>
+@inject SchoolInventoryManagement.Web.Helpers.AuditText AuditText
+@{
+    ViewData["Title"] = "Audit trail";
+    var action = ViewBag.Action as string ?? "";
+    var maxRows = (int)ViewBag.MaxRows;
+
+    // The Action filter's choices; each matches any action containing it.
+    var actions = new List<(string Label, string Value)>
+    {
+        ("Created", "Created"), ("Updated", "Updated"), ("Deleted", "Deleted"),
+        ("Overdue", "Overdue"), ("Report views", "Report Viewed"), ("Exports", "Data Exported"),
+        ("Branches", "Branch"), ("Departments", "Department"), ("Locations", "Location"),
+        ("Roles", "Role"), ("Requisitions", "NewItemRequest"), ("Request lines", "AssetRequestItem")
+    };
+    if (User.IsInRole(SchoolInventoryManagement.DAL.Constants.RoleNames.Administrator))
+        actions.Add(("App errors", "Error"));
+    if (action != "" && !actions.Any(a => a.Value == action))
+        actions.Add((action, action));
+
+    // Tag colour by what kind of action it was.
+    static string Tone(string a) =>
+        a.EndsWith("Deleted") || a.Contains("Error") ? "st-overdue"
+        : a.EndsWith("Created") ? "st-available"
+        : a.Contains("Overdue") ? "cond-poor"
+        : a.Contains("Signed in") || a.Contains("Viewed") || a.Contains("Exported") ? "status-returned"
+        : "st-disposed";
+    static string Short(string a)
+    {
+        var last = a.Split(' ').LastOrDefault() ?? a;
+        return last is "Created" or "Updated" or "Deleted" ? last : a;
+    }
+}
+
+<div class="asset-detail-head mb-2 pb-0 border-0">
+    <div>
+        <h2 class="asset-detail-title">Reports</h2>
+        <div class="asset-detail-sub">Who changed what, newest first. Read-only.</div>
+    </div>
+    <div class="asset-detail-actions">
+        <a asp-action="ExportAudit"
+           asp-route-fromDate="@Context.Request.Query["fromDate"]"
+           asp-route-toDate="@Context.Request.Query["toDate"]"
+           asp-route-userId="@Context.Request.Query["userId"]"
+           asp-route-actionContains="@Context.Request.Query["actionContains"]"
+           class="btn btn-primary">&darr; Export CSV</a>
+    </div>
+</div>
+
+@await Html.PartialAsync("_ReportsNav")
+
+<form method="get" class="rp-filters">
+    <label class="rp-field">
+        <span>From</span>
+        <input type="date" name="fromDate" class="form-control" value="@(ViewBag.FromDate is DateTime f ? f.ToString("yyyy-MM-dd") : "")" />
+    </label>
+    <label class="rp-field">
+        <span>To</span>
+        <input type="date" name="toDate" class="form-control" value="@(ViewBag.ToDate is DateTime t ? t.ToString("yyyy-MM-dd") : "")" />
+    </label>
+    <label class="rp-field">
+        <span>User</span>
+        @Html.DropDownList("userId", (IEnumerable<SelectListItem>)ViewBag.Users, "Everyone", new { @class = "form-select" })
+    </label>
+    <label class="rp-field">
+        <span>Action</span>
+        <select name="actionContains" class="form-select">
+            <option value="">Any action</option>
+            @foreach (var a in actions)
+            {
+                <option value="@a.Value" selected="@(a.Value == action)">@a.Label</option>
+            }
+        </select>
+    </label>
+    <label class="rp-field">
+        <span>Rows</span>
+        <select name="maxRows" class="form-select">
+            @foreach (var n in new[] { 100, 200, 500, 1000, 2000 }.Union(new[] { maxRows }).OrderBy(n => n))
+            {
+                <option value="@n" selected="@(n == maxRows)">@n max</option>
+            }
+        </select>
+    </label>
+    <div class="rp-actions">
+        <a asp-action="Audit" class="btn btn-outline-secondary">Reset</a>
+        <button type="submit" class="btn btn-primary">Apply</button>
+    </div>
+</form>
+
+@if (ViewBag.WasTruncated == true)
+{
+    <div class="sab-callout sab-callout-warn mb-3">
+        <span class="sab-callout-label">Limit reached</span>
+        Only the newest @maxRows entries are shown. Narrow the dates, raise Rows, or use Export CSV (up to 2000 rows).
+    </div>
+}
+
+<div class="sab-table-card" data-pager data-page-size="10" data-noun="entries">
+    @if (Model.Any())
+    {
+        <div class="table-responsive">
+            <table class="table asset-table mb-0">
+                <thead>
+                    <tr><th>When</th><th>User</th><th>Action</th><th>Target</th><th>What changed</th><th>IP</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in Model)
+                    {
+                        <tr data-pager-item>
+                            <td class="text-nowrap">@row.LogDateTime.ToString("MMM d · h:mm tt")</td>
+                            <td>
+                                @row.UserName
+                                <div class="text-muted small">@row.UserRole</div>
+                            </td>
+                            <td><span class="asset-pill @Tone(row.ActionPerformed)" title="@row.ActionPerformed">@Short(row.ActionPerformed)</span></td>
+                            <td>
+                                @if (row.TargetAssetID.HasValue)
+                                {
+                                    <a asp-controller="Assets" asp-action="Details" asp-route-id="@row.TargetAssetID">@row.TargetAssetCode</a>
+                                }
+                                else if (row.EntityType == "AssetRequest" && row.EntityID.HasValue)
+                                {
+                                    <a asp-controller="AssetRequests" asp-action="Details" asp-route-id="@row.EntityID">Request #@row.EntityID</a>
+                                }
+                                else if (row.EntityType is not null && row.EntityType != "Report" && row.EntityID.HasValue)
+                                {
+                                    <span>@DisplayText.Humanize(row.EntityType) #@row.EntityID</span>
+                                }
+                                else
+                                {
+                                    <span class="is-empty">Not a record</span>
+                                }
+                            </td>
+                            <td class="history-details">@DisplayText.Or(await AuditText.FormatAsync(row.Description), "No details")</td>
+                            <td>
+                                @if (string.IsNullOrEmpty(row.IPAddress))
+                                {
+                                    <span class="is-empty">Not recorded</span>
+                                }
+                                else
+                                {
+                                    <span class="rp-ip">@row.IPAddress</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <div class="history-foot">
+            <span data-pager-range></span>
+            <div class="d-flex align-items-center flex-wrap" style="gap:8px;">
+                <span class="text-muted">Show</span>
+                <select class="form-select form-select-sm rq-size" data-pager-size aria-label="Rows per page">
+                    <option value="10" selected>10</option>
+                    <option value="20">20</option>
+                    <option value="50">50</option>
+                </select>
+                <span class="text-muted">per page</span>
+                <div class="d-flex flex-wrap" style="gap:6px;" data-pager-buttons></div>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="sab-empty"><p class="mb-0">No audit entries match these filters.</p></div>
+    }
+</div>

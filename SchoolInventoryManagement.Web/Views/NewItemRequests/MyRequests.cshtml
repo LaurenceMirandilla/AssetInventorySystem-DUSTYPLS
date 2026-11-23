@@ -1,0 +1,291 @@
+﻿@model List<SchoolInventoryManagement.BLL.DTOs.NewItemRequestResponseDTO>
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@using SchoolInventoryManagement.Web.ViewModels
+@{
+    // The signed-in user's own new-item requests, with each one's stages
+    // and steps beside the list. (Everyone's requests: All.cshtml.)
+    ViewData["Title"] = "My Requisitions";
+    // What this page shows, for the live updates (_Layout, site.js).
+    ViewData["LiveScope"] = "mine";
+
+    // What is still on its way, and what was sent and waits for you to
+    // confirm receipt. Finished ones are on History.
+    var groups = new[]
+    {
+        (Key: "transit", Label: "In progress", Items: Model.Where(r => NewItemProgress.IsActive(r) && !r.AwaitsAcknowledgment).ToList()),
+        (Key: "receive", Label: "Sent to you, to confirm", Items: Model.Where(r => r.AwaitsAcknowledgment).ToList())
+    };
+    var ordered = groups.SelectMany(g => g.Items).ToList();
+
+    // Only people who have been allowed to can file a request; the rest
+    // are told who in their department to ask.
+    var canRequest = ViewBag.CanRequest is true;
+    var askThese = ViewBag.DepartmentRequesters as List<string> ?? new List<string>();
+}
+
+@functions {
+    static string Initials(string name)
+    {
+        var initials = string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(p => p[0])).ToUpperInvariant();
+        return initials.Length > 2 ? initials[..2] : initials;
+    }
+
+    // How many of its stages are behind it (assets have a fifth,
+    // Received).
+    static int StagesDone(NewItemRequestResponseDTO r) => NewItemProgress.StagesDone(r);
+
+    static bool IsStopped(NewItemRequestResponseDTO r) =>
+        r.RequestStatus is NewItemStatus.Rejected or NewItemStatus.Cancelled;
+
+    // What a step did, said after the person's name.
+    static string StepText(NewItemStatus s) => NewItemProgress.StepText(s);
+}
+
+@if (TempData["ErrorMessage"] != null)
+{
+    <div class="alert alert-danger">@TempData["ErrorMessage"]</div>
+}
+
+<div class="asset-detail-head mb-3 pb-0 border-0">
+    <div>
+        <h2 class="asset-detail-title">My Requisitions</h2>
+        <div class="asset-detail-sub">Things you have asked the school to acquire, and where each one has got to.</div>
+    </div>
+    <div class="asset-detail-actions">
+        <a asp-action="History" class="btn btn-outline-secondary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l3 2" /></svg>
+            History
+        </a>
+        @if (canRequest)
+        {
+            <a asp-action="Create" class="btn btn-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                New requisition
+            </a>
+        }
+    </div>
+</div>
+
+@if (!canRequest)
+{
+    @* Not one of the chosen requesters. *@
+    <div class="alert alert-warning">
+        <strong>You can't make requisitions yourself.</strong>
+        @if (askThese.Any())
+        {
+            <span>Ask one of your department's requesters: @string.Join(askThese.Count == 2 ? " or " : ", ", askThese).</span>
+        }
+        else
+        {
+            <span>Nobody in your department has been chosen yet. Ask the Administrator, the Principal or a Property Officer to choose someone.</span>
+        }
+        <span>You can still borrow from the Property Department (Borrowing).</span>
+    </div>
+}
+
+@if (!ordered.Any())
+{
+    <div class="sab-table-card">
+        <div class="sab-empty">
+            <div class="sab-empty-title">Nothing in progress</div>
+            <p>@(canRequest ? "Need fixed assets or consumables for your department? Make a requisition: what is in stock is sent, the rest is bought first." : "Your requisitions would be listed here.") Finished requisitions are on History.</p>
+            @if (canRequest)
+            {
+                <a asp-action="Create" class="btn btn-primary">+ New requisition</a>
+            }
+        </div>
+    </div>
+}
+else
+{
+    @* In progress / Done / All: each narrows the list (the hidden "tab" filter). *@
+    var startReqTab = groups[0].Items.Any() || !groups[1].Items.Any() ? "active" : "receive";
+    <nav class="page-tabs" aria-label="In progress or to receive" id="reqTabs">
+        <a href="#" data-req-tab="active" class="page-tab @(startReqTab == "active" ? "active" : "")">In progress <span class="history-tab-count">@groups[0].Items.Count</span></a>
+        <a href="#" data-req-tab="receive" class="page-tab @(startReqTab == "receive" ? "active" : "")">To receive <span class="history-tab-count">@groups[1].Items.Count</span></a>
+    </nav>
+
+    <div class="sab-table-card myassets" data-md data-page-size="8">
+        <aside class="myassets-list" aria-label="Your requisitions">
+            <div class="md-toolbar">
+                <select data-md-filter="tab" data-md-outside id="reqTabFilter" hidden aria-hidden="true">
+                    <option value="active" selected="@(startReqTab == "active")"></option>
+                    <option value="receive" selected="@(startReqTab == "receive")"></option>
+                </select>
+                <label class="asset-search">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                    <input type="text" data-md-search autocomplete="off" placeholder="Search my requisitions..." aria-label="Search my requisitions" />
+                </label>
+                <div class="dropdown">
+                    <button type="button" class="asset-tool-btn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z" /></svg>
+                        Filters
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end md-filter-menu">
+                        <label class="form-label">Stage</label>
+                        <select class="form-select form-select-sm" data-md-filter="stage">
+                            <option value="">Any</option>
+                            @* Only real stages, once each: the old department-head
+                               value reads as "Awaiting Principal" too, and
+                               DeliveryFailed is never a request's stage. *@
+                            @foreach (var s in new[] { NewItemStatus.Procuring, NewItemStatus.AwaitingArrival,
+                                                       NewItemStatus.Arrived, NewItemStatus.Delivered, NewItemStatus.Rejected, NewItemStatus.Cancelled })
+                            {
+                                <option value="@s.ToString().ToLowerInvariant()">@DisplayText.Stage(s)</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            @foreach (var g in groups.Where(g => g.Items.Any()))
+            {
+                <div class="myassets-group" data-md-group>
+                    <div class="myassets-group-label group-@g.Key">@g.Label · <span data-md-count>@g.Items.Count</span></div>
+                    @foreach (var r in g.Items)
+                    {
+                        var done = StagesDone(r);
+                        var stopped = IsStopped(r);
+                        var stageCount = NewItemProgress.StageCountFor(r);
+                        <button type="button" class="myassets-item @(stopped ? "item-late" : g.Key == "transit" ? "item-transit" : "")"
+                                data-entry="n-@r.NewItemRequestID" data-tab="@(g.Key == "transit" ? "active" : "receive")" data-stage="@((r.RequestStatus == NewItemStatus.AwaitingDeptHead ? NewItemStatus.AwaitingBudget : r.RequestStatus).ToString().ToLowerInvariant())"
+                                data-search="@($"#{r.NewItemRequestID} {r.NewItemRequestID} {string.Join(' ', r.Items.Select(i => i.ItemName))} {r.Reason} {DisplayText.Stage(r.RequestStatus)}".ToLowerInvariant())">
+                            <span class="myassets-badge">
+                                <strong>#@r.NewItemRequestID</strong>
+                                <small>New</small>
+                            </span>
+                            <span class="myassets-item-main">
+                                <span class="myassets-item-title">@r.ItemName</span>
+                                <span class="myassets-item-sub">
+                                    @NewItemProgress.Kind(r) · @(r.Items.Count > 1 ? $"{r.Items.Count} items · " : "")@r.Quantity unit@(r.Quantity == 1 ? "" : "s")@(r.NeededBy is not null && !stopped && done < stageCount ? " · needed " + r.NeededBy.Value.ToString("MMM d") : "")
+                                </span>
+                                <span class="nir-progress @(stopped ? "is-stopped" : "")" aria-hidden="true">
+                                    @for (var i = 0; i < stageCount; i++)
+                                    {
+                                        <span class="@(i < done ? "on" : i == done && (NewItemProgress.IsActive(r) || stopped) ? "now" : "")"></span>
+                                    }
+                                </span>
+                            </span>
+                            <span class="myassets-item-due">@(r.AwaitsAcknowledgment ? "To confirm" : DisplayText.Stage(r.RequestStatus))</span>
+                        </button>
+                    }
+                </div>
+            }
+            <div class="myassets-nomatch" data-md-empty hidden>Nothing matches your search.</div>
+
+            <div class="md-foot">
+                <span data-md-range></span>
+                <div data-md-pager></div>
+            </div>
+        </aside>
+
+        <section class="myassets-detail">
+            @foreach (var r in ordered)
+            {
+                var stopped = IsStopped(r);
+                var lastStep = r.Steps.LastOrDefault();
+                // The stages, Received included for assets.
+                var steps = NewItemProgress.Steps(r, "now");
+                var pillCss = stopped ? "st-overdue" : r.RequestStatus == NewItemStatus.Delivered && !r.AwaitsAcknowledgment ? "st-available" : "st-intransit";
+
+                <article class="myassets-panel" data-panel="n-@r.NewItemRequestID" hidden>
+                    <button type="button" class="myassets-back" data-back>&larr; All my requests</button>
+
+                    <div class="myassets-panel-head">
+                        <div class="min-w-0">
+                            <div class="myassets-panel-meta">
+                                <span>Requisition #@r.NewItemRequestID · submitted @r.RequestDate.ToString("MMM d, yyyy")</span>
+                            </div>
+                            <h3 class="myassets-panel-title">@r.ItemName</h3>
+                        </div>
+                        <div class="myassets-panel-actions">
+                            <span class="asset-pill asset-status @pillCss">@DisplayText.Stage(r.RequestStatus)</span>
+                            <a asp-action="Details" asp-route-id="@r.NewItemRequestID" class="btn btn-outline-secondary">Open requisition &rarr;</a>
+                        </div>
+                    </div>
+
+                    <partial name="_RequestSteps" model="steps" />
+
+                    <div class="myassets-stats">
+                        <div><span>Items</span><strong>@r.Items.Count · @r.Quantity unit@(r.Quantity == 1 ? "" : "s")</strong></div>
+                        <div><span>Sent to</span><strong>@DisplayText.Or(r.DeliverToText, "Not given")</strong></div>
+                        <div><span>Needed by</span><strong>@DisplayText.Or(r.NeededBy?.ToString("MMM d, yyyy"), "No date given")</strong></div>
+                        <div><span>Last action</span><strong>@((lastStep?.ActedAt ?? r.RequestDate).ToString("MMM d"))</strong></div>
+                    </div>
+
+                    @if (r.AwaitsAcknowledgment)
+                    {
+                        <form asp-action="Acknowledge" asp-route-id="@r.NewItemRequestID" asp-route-returnTo="mine" method="post" class="req-action mt-3"
+                              onsubmit="return confirm('Confirm you received every item on requisition #@r.NewItemRequestID?');">
+                            @Html.AntiForgeryToken()
+                            @Html.FormTicket()
+                            <input type="hidden" name="rowVersionBase64" value="@RowVersionHelper.ToBase64(r.RowVersion)" />
+                            <div>
+                                <div class="req-action-title">Did you get @(r.RegisteredUnits.Count == 1 ? "it" : "them")?</div>
+                                <div class="req-action-note">Confirm you received the items. They then become @(r.DepartmentName)'s.</div>
+                            </div>
+                            <div class="req-action-buttons">
+                                <button type="submit" class="btn btn-primary">Confirm receipt</button>
+                            </div>
+                        </form>
+                    }
+                    else if (r.AcknowledgedAt is not null)
+                    {
+                        <div class="req-note"><strong>Received:</strong> you confirmed it on @r.AcknowledgedAt.Value.ToString("MMM d, yyyy"). The items are @(r.DepartmentName)'s.</div>
+                    }
+
+                    <h4 class="md-section-title">What you asked for</h4>
+                    <partial name="_NewItemTicketItems" model="r" />
+
+                    <div class="nir-cols">
+                        <div>
+                            <h4 class="md-section-title">Reason</h4>
+                            <div class="req-note mt-0">@DisplayText.Or(r.Reason, "None given")</div>
+                        </div>
+                        <div>
+                            <h4 class="md-section-title">Steps so far</h4>
+                            <ul class="steps-feed">
+                                @foreach (var s in r.Steps.AsEnumerable().Reverse())
+                                {
+                                    var isMe = s.ActedByName == r.RequestedByUserName;
+                                    <li>
+                                        <span class="history-avatar">@Initials(s.ActedByName)</span>
+                                        <div>
+                                            <div class="steps-feed-text">
+                                                <strong>@(isMe ? "You" : s.ActedByName)</strong> @StepText(s.Status)@(string.IsNullOrWhiteSpace(s.Remarks) ? "" : $" — “{s.Remarks}”")
+                                            </div>
+                                            <div class="steps-feed-meta">@s.ActedAt.ToString("MMM d, h:mm tt")@(isMe ? "" : " · " + s.ActedByRole)</div>
+                                        </div>
+                                    </li>
+                                }
+                                @if (!r.Steps.Any())
+                                {
+                                    <li><div class="steps-feed-meta">Submitted @r.RequestDate.ToString("MMM d, h:mm tt").</div></li>
+                                }
+                            </ul>
+                        </div>
+                    </div>
+                </article>
+            }
+        </section>
+    </div>
+}
+
+<script>
+    // In progress / Done / All: each tab narrows the list (the hidden "tab"
+    // filter of the list above), like Borrowing's tabs.
+    (function () {
+        var tabs = document.getElementById('reqTabs');
+        var filter = document.getElementById('reqTabFilter');
+        if (!tabs || !filter) return;
+        tabs.addEventListener('click', function (e) {
+            var a = e.target.closest('[data-req-tab]');
+            if (!a) return;
+            e.preventDefault();
+            tabs.querySelectorAll('[data-req-tab]').forEach(function (t) { t.classList.toggle('active', t === a); });
+            filter.value = a.getAttribute('data-req-tab');
+            filter.dispatchEvent(new Event('change'));
+        });
+    })();
+</script>

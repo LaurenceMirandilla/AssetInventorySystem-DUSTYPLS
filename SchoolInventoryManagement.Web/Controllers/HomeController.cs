@@ -1,0 +1,148 @@
+using System.Diagnostics;
+using System.Linq;
+using System.Security.Claims;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using SchoolInventoryManagement.BLL.DTOs;
+using SchoolInventoryManagement.BLL.Interfaces;
+using SchoolInventoryManagement.DAL.Constants;
+using SchoolInventoryManagement.DAL.Entities.Enums;
+using SchoolInventoryManagement.Web.Models;
+using SchoolInventoryManagement.Web.ViewModels;
+
+namespace SchoolInventoryManagement.Web.Controllers
+{
+    [Authorize] // any logged-in user, regardless of role
+    public class HomeController : Controller
+    {
+        private readonly IReportService _reportService;
+        private readonly IAssetRequestService _requestService;
+        private readonly IAssetAssignmentService _assignmentService;
+        private readonly ILiveStatusService _live;
+
+        public HomeController(
+            IReportService reportService,
+            IAssetRequestService requestService,
+            IAssetAssignmentService assignmentService,
+            ILiveStatusService live)
+        {
+            _reportService = reportService;
+            _requestService = requestService;
+            _assignmentService = assignmentService;
+            _live = live;
+        }
+
+        private int CurrentUserId =>
+            int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+        public async Task<IActionResult> Index()
+        {
+            var isReportsViewer =
+                User.IsInRole(RoleNames.Administrator) ||
+                User.IsInRole(RoleNames.Principal) ||
+                User.IsInRole(RoleNames.AssetOfficer);
+
+            var model = new HomeDashboardViewModel
+            {
+                IsReportsViewer = isReportsViewer,
+                DisplayName = User.Identity?.Name?.Split(' ').FirstOrDefault() ?? "there"
+            };
+
+            if (isReportsViewer)
+            {
+                var summary = await _reportService.GetInventorySummaryAsync(CurrentUserId);
+
+                // In service only -- disposed units are no longer stock, and
+                // this matches the Assets list, which hides them by default.
+                model.TotalAssets = summary.InServiceAssets;
+                model.CurrentlyIssued = summary.AssignedCount;
+                model.UnderMaintenanceCount = summary.UnderMaintenanceCount;
+                model.ValueInService = summary.TotalValue;
+                model.ByCategory = summary.ByCategory;
+
+                // What this person can decide: the same number as the
+                // Approvals badge (borrow and transfer only for Property).
+                model.PendingRequestCount = await _live.CountApprovalsAsync(CurrentUserId);
+                model.PendingRequestsController = User.IsInRole(RoleNames.AssetOfficer) || User.IsInRole(RoleNames.Administrator)
+                    ? "AssetRequests" : "SupplyRequests";
+
+                var recent = await _reportService.GetAuditTrailAsync(
+                    fromDate: null, toDate: null, userId: null, actionContains: null,
+                    maxRows: 500, actingUserId: CurrentUserId);
+                model.RecentActivity = CollapseRepeats(recent, take: 6);
+            }
+            else
+            {
+                // Everything here is scoped to the signed-in user, so it needs
+                // no role check -- which is the point: these are the roles that
+                // GetInventorySummaryAsync would refuse outright.
+                var myAssignments = await _assignmentService
+                    .GetActiveAssignmentsForUserAsync(CurrentUserId);
+                model.AssetsInMyCare = myAssignments.Count;
+
+                var myRequests = await _requestService.GetMyRequestsAsync(CurrentUserId);
+                // Open = not finished: still waiting for a decision, or
+                // approved and not yet returned.
+                model.MyOpenRequestCount = myRequests.Count(r =>
+                    r.RequestStatus == RequestStatus.Pending ||
+                    r.RequestStatus == RequestStatus.Approved ||
+                    r.RequestStatus == RequestStatus.InTransit ||
+                    r.RequestStatus == RequestStatus.Assigned);
+
+                // GetMyRequestsAsync already orders newest first.
+                model.MyRecentRequests = myRequests.Take(5).ToList();
+            }
+
+            return View(model);
+        }
+
+        [Authorize(Roles = RoleNames.Administrator)]
+        public IActionResult Privacy() { return View(); }
+
+        // Target of UseStatusCodePagesWithReExecute in Program.cs, so a
+        // NotFound() from any controller renders a real page in the app's
+        // shell instead of the browser's blank default. AllowAnonymous
+        // because the re-execute runs through this controller's [Authorize]
+        // as well -- without it a 404 for a signed-out visitor would bounce
+        // to the login page and hide what actually happened.
+        [AllowAnonymous]
+        public IActionResult Error(int? id)
+        {
+            return View(new ErrorViewModel
+            {
+                StatusCode = id ?? 500,
+                // The same code ExceptionHandlingMiddleware writes into the
+                // error's audit entry, so the two can be matched up.
+                RequestId = HttpContext.TraceIdentifier
+            });
+        }
+
+        // The same person doing the same thing again and again (a batch of 67
+        // new users, a report opened five times) shows as one line with a
+        // count, so one bulk action can't fill the whole feed. Repeats count
+        // as a run while each is within two minutes of the one before.
+        private static List<HomeDashboardViewModel.ActivityItem> CollapseRepeats(
+            List<AuditReportRowDTO> rows, int take)
+        {
+            var items = new List<HomeDashboardViewModel.ActivityItem>();
+            foreach (var row in rows)
+            {
+                var last = items.Count > 0 ? items[^1] : null;
+                if (last is not null
+                    && last.Entry.UserName == row.UserName
+                    && last.Entry.ActionPerformed == row.ActionPerformed
+                    && (last.Oldest - row.LogDateTime).TotalMinutes <= 2)
+                {
+                    last.Count++;
+                    last.Oldest = row.LogDateTime;
+                    continue;
+                }
+                if (items.Count == take)
+                    break;
+                items.Add(new HomeDashboardViewModel.ActivityItem(row));
+            }
+            return items;
+        }
+    }
+}

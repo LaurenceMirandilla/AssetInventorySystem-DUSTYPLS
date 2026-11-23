@@ -1,0 +1,305 @@
+@model SchoolInventoryManagement.BLL.DTOs.CreatePurchaseOrderDTO
+@using SchoolInventoryManagement.BLL.DTOs
+@using SchoolInventoryManagement.DAL.Entities.Enums
+@{
+    var form = (PurchaseOrderFormDTO)ViewBag.Form;
+    var entered = ViewBag.Entered as Dictionary<int, CreatePurchaseOrderLineDTO>;
+    // The same form makes a new order and edits one (Purchasing/EditOrder).
+    var editing = form.PurchaseOrderID is not null;
+    var budget = form.Budget;
+    var isSupplies = form.ItemKind == CategoryKind.Supply;
+    var late = form.NeededBy is not null && form.NeededBy.Value.Date < PhilippineTime.Today;
+    ViewData["Title"] = editing ? $"Edit {form.PONumber}" : $"Purchase order · Requisition #{form.NewItemRequestID}";
+    string Peso(decimal v) => (v < 0 ? "-₱" : "₱") + Math.Abs(v).ToString("N2");
+}
+@* A purchase order for what requisition #N is missing (Scripts/031), or a
+   draft being edited (until it is printed, Scripts/037). Left: the
+   supplier, the items with quantities and prices, and comments. Right: the
+   requisition, and the order's total against the department's budget for
+   the year: an order over it cannot be saved. *@
+
+<div class="sab-page-head">
+    <div>
+        <nav class="asset-crumbs" aria-label="Breadcrumb">
+            <a asp-action="Index" asp-route-tab="@(editing ? "orders" : "buy")">Purchasing</a>
+            <span aria-hidden="true">&rsaquo;</span>
+            <a asp-controller="NewItemRequests" asp-action="Details" asp-route-id="@form.NewItemRequestID">Requisition #@form.NewItemRequestID</a>
+            <span aria-hidden="true">&rsaquo;</span>
+            <span>@(editing ? form.PONumber : "New purchase order")</span>
+        </nav>
+        <h2>@(editing ? "Edit " + form.PONumber : "New purchase order")</h2>
+        <p class="sab-page-sub">
+            @(editing ? "Change the supplier, items or prices. Set an item to 0 to take it off this order. Once it is printed it can no longer be changed." : "Who you buy from, how many of each item and at what price. It is saved as a draft; print it to bring to the supplier.")
+        </p>
+    </div>
+</div>
+
+<div asp-validation-summary="All" class="text-danger mb-2"></div>
+
+<form asp-action="@(editing ? "EditOrder" : "CreateOrder")" asp-route-id="@form.PurchaseOrderID" method="post" id="poForm" class="register-form po-form"
+      data-budget="@budget.AnnualBudget.ToString(System.Globalization.CultureInfo.InvariantCulture)"
+      data-spent="@budget.Spent.ToString(System.Globalization.CultureInfo.InvariantCulture)"
+      data-dept="@budget.DepartmentName" data-year="@budget.Year">
+    @Html.AntiForgeryToken()
+    @Html.FormTicket()
+    <input type="hidden" asp-for="NewItemRequestID" />
+
+    <div class="row g-3">
+        <div class="col-lg-8">
+
+            @* ---- 1. Supplier ---- *@
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head">
+                    <span class="register-step-num">1</span>
+                    <div class="register-step-title flex-grow-1">Supplier</div>
+                    <span class="nr-head-note">pick one from the list, or type a new one</span>
+                </div>
+                <div class="register-step-body">
+                    <div class="row g-3">
+                        <div class="col-md-7">
+                            <label class="form-label" for="SupplierName">Supplier name</label>
+                            <input asp-for="SupplierName" class="form-control" maxlength="150" list="supplierList" required autocomplete="off" placeholder="e.g. Office Warehouse, Cubao" />
+                            <datalist id="supplierList">
+                                @foreach (var s in form.Suppliers)
+                                {
+                                    <option value="@s.Name" data-address="@s.Address" data-contact="@s.Contact"></option>
+                                }
+                            </datalist>
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label" for="SupplierContact">Contact <span class="register-optional">optional</span></label>
+                            <input asp-for="SupplierContact" class="form-control" maxlength="100" placeholder="Phone, email or contact person" />
+                        </div>
+                        <div class="col-md-8">
+                            <label class="form-label" for="SupplierAddress">Address <span class="register-optional">optional</span></label>
+                            <input asp-for="SupplierAddress" class="form-control" maxlength="250" placeholder="Street, city" />
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label" for="OrderDate">Order date</label>
+                            <input asp-for="OrderDate" type="date" class="form-control" value="@Model.OrderDate.ToString("yyyy-MM-dd")" required />
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            @* ---- 2. Items ---- *@
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head">
+                    <span class="register-step-num">2</span>
+                    <div class="register-step-title flex-grow-1">Items to buy</div>
+                    <span class="nr-head-note">name and description print on the order</span>
+                </div>
+                <div class="po-lines">
+                    <div class="po-lines-head" aria-hidden="true">
+                        <span>Item</span><span>Quantity</span><span>Unit price</span><span class="text-end">Amount</span>
+                    </div>
+                    @foreach (var line in form.Lines)
+                    {
+                        var id = line.NewItemRequestItemID;
+                        var e = entered != null && entered.TryGetValue(id, out var x) ? x : null;
+                        // A new order starts with everything left; an edited one with what is on it.
+                        var qty = e?.Quantity ?? (editing ? 0 : line.Left);
+                        <div class="po-line" data-po-line>
+                            <div class="po-line-item">
+                                <input type="text" name="Name_@id" class="form-control po-line-name" maxlength="150" required
+                                       value="@(e?.ItemName ?? line.ItemName)" aria-label="Item" />
+                                <input type="text" name="Desc_@id" class="form-control form-control-sm po-line-desc" maxlength="500"
+                                       value="@(e?.Description ?? line.Description)" placeholder="Description: brand, size, model..." aria-label="Description of @line.ItemName" />
+                                <div class="po-line-meta">
+                                    @(editing ? $"Up to {line.Left} on this order" : $"{line.Left} to order")@(line.Ordered > 0 ? $" · {line.Ordered} on other orders" : "")@(isSupplies && !string.IsNullOrWhiteSpace(line.Unit) ? $" · per {line.Unit}" : "")
+                                </div>
+                            </div>
+                            <div class="po-line-qty">
+                                <label class="po-line-label" for="q-@id">Quantity</label>
+                                <input type="number" id="q-@id" name="Quantity_@id" class="form-control" min="0" max="@line.Left" step="1"
+                                       value="@qty" data-po-qty aria-label="Quantity of @line.ItemName" />
+                                <small class="text-muted">of @line.Left</small>
+                            </div>
+                            <div class="po-line-price">
+                                <label class="po-line-label" for="p-@id">Unit price</label>
+                                <div class="input-group">
+                                    <span class="input-group-text">₱</span>
+                                    <input type="number" id="p-@id" name="Price_@id" class="form-control" min="0" step="0.01"
+                                           value="@(e is not null && e.UnitPrice >= 0 && (e.UnitPrice > 0 || e.Quantity > 0) ? e.UnitPrice.ToString("0.00") : "")" data-po-price placeholder="0.00" aria-label="Unit price of @line.ItemName" required />
+                                </div>
+                            </div>
+                            <div class="po-line-amount" data-po-amount>—</div>
+                        </div>
+                    }
+                    <div class="po-lines-foot">
+                        <span class="text-muted small">Buying from two suppliers? Set what this one doesn't have to 0 and order it separately.</span>
+                        <span>Subtotal <strong id="poSubtotal">₱0.00</strong></span>
+                    </div>
+                </div>
+            </div>
+
+            @* ---- 3. Comments (optional) ---- *@
+            <div class="asset-card register-step mb-3">
+                <div class="register-step-head">
+                    <span class="register-step-num">3</span>
+                    <div class="register-step-title flex-grow-1">Comments or special instructions</div>
+                    <span class="nr-head-note">optional</span>
+                </div>
+                <div class="register-step-body">
+                    <textarea asp-for="Notes" class="form-control" rows="2" maxlength="500" placeholder="Delivery instructions..." aria-label="Comments or special instructions"></textarea>
+                </div>
+            </div>
+        </div>
+
+        @* ---- Right: the requisition, then the total and the budget ---- *@
+        <div class="col-lg-4">
+            <div class="asset-card register-step mb-3" id="poRequest">
+                <div class="register-step-head">
+                    <div class="register-step-title flex-grow-1">Requisition #@form.NewItemRequestID</div>
+                    <a asp-controller="NewItemRequests" asp-action="Details" asp-route-id="@form.NewItemRequestID" class="btn btn-sm po-open-req">Open requisition &rarr;</a>
+                </div>
+                <div class="register-step-body">
+                    <dl class="approve-facts po-side-facts">
+                        <div><dt>Requested by</dt><dd>@form.RequestedByUserName<small class="d-block">@form.RequesterRole</small></dd></div>
+                        <div><dt>Department</dt><dd>@form.DepartmentName<small class="d-block">@form.BranchName</small></dd></div>
+                        <div class="@(late ? "is-late" : "")"><dt>Needed by</dt><dd>@DisplayText.Or(form.NeededBy?.ToString("MMM d, yyyy"), "Not given")@if (late) {<small class="d-block">late</small>}</dd></div>
+                        <div><dt>Kind</dt><dd>@(isSupplies ? "Consumables" : "Fixed assets")</dd></div>
+                        <div class="po-side-wide"><dt>Goes to</dt><dd>@(form.ForStock ? "Property Department's stock (for a borrow)" : DisplayText.Or(form.DeliverTo, form.DepartmentName + "'s room"))</dd></div>
+                        <div class="po-side-wide"><dt>Submitted</dt><dd>@form.RequestedOn.ToString("MMM d, yyyy · h:mm tt")</dd></div>
+                    </dl>
+                    <div class="po-reason"><span>Reason</span>@DisplayText.Or(form.Reason, "No reason given")</div>
+                    <div class="register-side-label mt-3 mb-1">What they asked for</div>
+                    <ul class="po-asked">
+                        @foreach (var i in form.AllItems)
+                        {
+                            <li class="@(i.ToBuy == 0 ? "is-stock" : "")">
+                                <span class="min-w-0">@i.ItemName@(isSupplies && !string.IsNullOrWhiteSpace(i.Unit) ? $" ({i.Unit})" : "")</span>
+                                <span class="po-asked-nums">
+                                    @i.Asked asked
+                                    @if (i.FromStock > 0) {<text> · @i.FromStock from stock</text>}
+                                    @if (i.ToBuy > 0) {<text> · <strong>@i.ToBuy to buy</strong></text>}
+                                </span>
+                            </li>
+                        }
+                    </ul>
+                </div>
+            </div>
+
+            <div class="asset-card po-summary" id="poSummary">
+                <div class="asset-card-title">@(editing ? form.PONumber : "This order")</div>
+                <div class="po-summary-body">
+                    <dl class="po-sums">
+                        <div class="po-sums-total"><dt>Total</dt><dd id="poTotal">₱0.00</dd></div>
+                    </dl>
+
+                    @* The department's budget for the year. *@
+                    <div class="po-budget" id="poBudget">
+                        <div class="register-side-label mb-2">@budget.DepartmentName budget · @budget.Year</div>
+                        <div class="po-meter" aria-hidden="true">
+                            <span class="po-meter-spent" id="meterSpent"></span><span class="po-meter-order" id="meterOrder"></span>
+                        </div>
+                        <dl class="po-sums po-budget-rows">
+                            <div><dt>Annual budget</dt><dd>@Peso(budget.AnnualBudget)</dd></div>
+                            <div><dt>On @(editing ? "other " : "")orders this year</dt><dd>@Peso(budget.Spent)</dd></div>
+                            <div><dt>This order</dt><dd id="budgetOrder">₱0.00</dd></div>
+                            <div class="po-sums-total"><dt>Left after this order</dt><dd id="budgetLeft">@Peso(budget.Left)</dd></div>
+                        </dl>
+                        <div class="po-over" id="poOver" role="alert" hidden>
+                            <strong>Over budget</strong>
+                            <span id="poOverText"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="register-footer">
+        <div class="d-flex flex-wrap" style="gap:8px;">
+            <a href="@(editing ? Url.Action("Index", new { tab = "orders" }) + "#o-" + form.PurchaseOrderID : Url.Action("Index"))" class="btn btn-outline-secondary">Cancel</a>
+            @if (!editing)
+            {
+                @* Can't be bought: reject the requisition instead (its own form, below). *@
+                <button type="button" class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#rejectRequisition">Reject requisition</button>
+            }
+        </div>
+        <div class="d-flex align-items-center flex-wrap ms-auto" style="gap:12px;">
+            <span class="po-foot-over" id="footOver" hidden>Over budget</span>
+            <span class="po-foot-total">Total <strong id="footTotal">₱0.00</strong></span>
+            <button type="submit" class="btn btn-primary" id="poSave">@(editing ? "Save changes" : "Save as draft")</button>
+        </div>
+    </div>
+</form>
+
+@if (!editing)
+{
+    var rejectModel = (form.NewItemRequestID, form.RowVersion, "rejectRequisition", form.AllItems.Any(i => i.Ordered > 0));
+    <partial name="_RejectRequisition" model="rejectModel" />
+}
+
+@section Scripts {
+    <script>
+        (function () {
+            var formEl = document.getElementById('poForm');
+            var rows = Array.from(document.querySelectorAll('[data-po-line]'));
+            var budget = parseFloat(formEl.dataset.budget) || 0;
+            var spent = parseFloat(formEl.dataset.spent) || 0;
+            var over = 0;
+            var peso = function (n) { return (n < 0 ? '-₱' : '₱') + Math.abs(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+            var set = function (id, text) { document.getElementById(id).textContent = text; };
+
+            function sync() {
+                var subtotal = 0;
+                rows.forEach(function (row) {
+                    var q = parseInt(row.querySelector('[data-po-qty]').value, 10) || 0;
+                    var p = parseFloat(row.querySelector('[data-po-price]').value) || 0;
+                    // A line left at 0 is not on this order: no price needed.
+                    row.querySelector('[data-po-price]').required = q > 0;
+                    row.classList.toggle('is-off', q <= 0);
+                    row.querySelector('[data-po-amount]').textContent = q > 0 ? peso(q * p) : 'Not on this order';
+                    subtotal += q > 0 ? q * p : 0;
+                });
+                var total = subtotal;
+                set('poSubtotal', peso(subtotal));
+                set('poTotal', peso(total));
+                set('footTotal', peso(total));
+                set('budgetOrder', peso(total));
+
+                // Against the budget: what is left after this order.
+                var left = budget - spent - total;
+                over = left < 0 ? -left : 0;
+                set('budgetLeft', peso(left));
+                document.getElementById('budgetLeft').classList.toggle('is-over', left < 0);
+                var scale = Math.max(budget, spent + total) || 1;
+                document.getElementById('meterSpent').style.width = (Math.min(spent, scale) / scale * 100) + '%';
+                document.getElementById('meterOrder').style.width = (Math.min(total, scale - Math.min(spent, scale)) / scale * 100) + '%';
+                document.getElementById('poBudget').classList.toggle('is-over', over > 0);
+                document.getElementById('poOver').hidden = over === 0;
+                document.getElementById('footOver').hidden = over === 0;
+                // Over the budget: it cannot be saved (the server refuses it too).
+                document.getElementById('poSave').disabled = over > 0;
+                var before = Math.max(0, budget - spent);
+                set('poOverText', over === 0 ? '' :
+                    'This order is ' + peso(total) + ', but the ' + formEl.dataset.dept + ' has only ' + peso(before) + ' left for ' + formEl.dataset.year +
+                    '. Lower the quantities or prices, or ask the Principal or an Administrator to raise the budget. It cannot be saved like this.');
+            }
+            rows.forEach(function (row) { row.addEventListener('input', sync); row.addEventListener('change', sync); });
+            // Prices the browser filled in itself (Back, autofill) send no
+            // input event: count again when the page is shown.
+            window.addEventListener('pageshow', sync);
+            sync();
+
+            // Over the budget: not saved.
+            formEl.addEventListener('submit', function (e) {
+                sync();
+                if (over > 0) e.preventDefault();
+            });
+
+            // A supplier picked from the list fills in its address and contact.
+            var nameBox = document.getElementById('SupplierName');
+            nameBox.addEventListener('change', function () {
+                var v = nameBox.value.trim().toLowerCase();
+                var opt = Array.from(document.querySelectorAll('#supplierList option')).find(function (o) { return o.value.toLowerCase() === v; });
+                if (!opt) return;
+                var a = document.getElementById('SupplierAddress'), c = document.getElementById('SupplierContact');
+                if (!a.value) a.value = opt.dataset.address || '';
+                if (!c.value) c.value = opt.dataset.contact || '';
+            });
+        })();
+    </script>
+}
